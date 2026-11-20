@@ -32,6 +32,8 @@ DE_CHOICE="1"
 GPU_STACK="stock"
 DE_NAME="XFCE4"
 CURRENT_STEP=0
+REQUIRED_FAILURES=()
+OPTIONAL_FAILURES=()
 # TOTAL_STEPS is set after user choices are made
 
 # Set from command-line flags (see usage below).
@@ -72,10 +74,10 @@ Options:
   -h, --help    Show this help
 
 One-line install:
-  curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-linux-setup.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh | bash
 
 One-line, unattended, KDE without Wine:
-  curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-linux-setup.sh | bash -s -- --de kde --no-wine -y
+  curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh | bash -s -- --de kde --no-wine -y
 
 Re-running is safe: installed packages are skipped and the launchers are
 regenerated. Install log: ~/termux-setup.log
@@ -261,7 +263,7 @@ _spin() {
     elif [ "$optional" = "optional" ]; then
         printf "\r\033[K  ${YELLOW}⚠${NC}  %-55s ${YELLOW}(optional — skipped)${NC}\n" "$message"
         log "OPTIONAL FAILED: $message"
-        return 0
+        return "$exit_code"
     else
         printf "\r\033[K  ${RED}✘${NC}  %-55s ${RED}(failed — see $LOG_FILE)${NC}\n" "$message"
         log "FAILED: $message"
@@ -378,6 +380,23 @@ provider_of() {
 #   Passing "optional" as the third argument downgrades a failed install from a
 #   red error to a yellow warning, for packages the desktop can live without.
 #
+record_package_failure() {
+    if [ "${2:-}" = "optional" ]; then
+        OPTIONAL_FAILURES+=("$1")
+        return 0
+    fi
+    REQUIRED_FAILURES+=("$1")
+    return 1
+}
+
+check_required_packages() {
+    [ "${#REQUIRED_FAILURES[@]}" -eq 0 ] && return 0
+    echo -e "${RED}Required packages failed: ${REQUIRED_FAILURES[*]}${NC}"
+    echo "Setup is incomplete. Check $LOG_FILE, fix the package error, then re-run the installer."
+    log "INCOMPLETE: required packages failed: ${REQUIRED_FAILURES[*]}"
+    return 1
+}
+
 safe_install_pkg() {
     local pkg=$1
     local name=${2:-$pkg}
@@ -401,7 +420,8 @@ safe_install_pkg() {
     if ! apt-cache show "$pkg" >/dev/null 2>&1; then
         printf "  ${YELLOW}⚠${NC}  %-55s ${YELLOW}(not in any enabled repo)${NC}\n" "$name"
         log "SKIP (unavailable): $pkg"
-        return 1
+        record_package_failure "$pkg" "$optional"
+        return $?
     fi
 
     # Conflicts the package can legitimately take over are not blockers.
@@ -421,7 +441,8 @@ $(apt_field "$pkg" Provides)")
                 printf "  ${YELLOW}⚠${NC}  %-55s ${YELLOW}(skipped — conflicts with: %s)${NC}\n" \
                     "$name" "$cname"
                 log "SKIP (conflict with $cname): $pkg"
-                return 1
+                record_package_failure "$pkg" "$optional"
+                return $?
             fi
         fi
     done <<< "$(apt_field "$pkg" Conflicts | tr ',' '\n')"
@@ -431,10 +452,11 @@ $(apt_field "$pkg" Provides)")
         "$pkg" < /dev/null >> "$LOG_FILE" 2>&1) &
 
     if [ "$optional" = "optional" ]; then
-        spinner_optional $! "Installing ${name}..."
+        spinner_optional $! "Installing ${name}..." && return 0
     else
-        spinner $! "Installing ${name}..."
+        spinner $! "Installing ${name}..." && return 0
     fi
+    record_package_failure "$pkg" "$optional"
 }
 
 # ============== BANNER ==============
@@ -588,7 +610,7 @@ step_update() {
 
     (DEBIAN_FRONTEND=noninteractive apt-get update -y "${APT_OPTS[@]}" \
         < /dev/null >> "$LOG_FILE" 2>&1) &
-    spinner $! "Updating package lists..."
+    spinner $! "Updating package lists..." || return 1
 
     # Run pkg upgrade in FOREGROUND (not backgrounded via &) so we can catch
     # the libpcre/libandroid-selinux crash that kills binaries like 'sleep'
@@ -617,7 +639,8 @@ step_repos() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Adding package repositories...${NC}"
     echo ""
     safe_install_pkg "x11-repo" "X11 Repository"
-    safe_install_pkg "tur-repo" "TUR Repository (Firefox, extra apps)"
+    safe_install_pkg "tur-repo" "TUR Repository (Firefox, extra apps)" optional
+    check_required_packages || return 1
 
     # MUST refresh after adding repos — otherwise packages from x11-repo
     # and tur-repo (termux-x11-nightly, firefox, etc.) won't be found.
@@ -633,7 +656,7 @@ step_x11() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing Termux-X11 display server...${NC}"
     echo ""
     safe_install_pkg "termux-x11-nightly" "Termux-X11 Display Server"
-    safe_install_pkg "xorg-xrandr"        "XRandR (Display Settings)"
+    safe_install_pkg "xorg-xrandr"        "XRandR (Display Settings)" optional
 }
 
 # ============== STEP 4: DESKTOP ENVIRONMENT ==============
@@ -651,27 +674,27 @@ step_desktop() {
         1)
             safe_install_pkg "xfce4"                    "XFCE4 Desktop"
             safe_install_pkg "xfce4-terminal"           "XFCE4 Terminal"
-            safe_install_pkg "xfce4-whiskermenu-plugin" "Whisker Menu Plugin"
-            safe_install_pkg "plank-reloaded"           "Plank Dock"
-            safe_install_pkg "thunar"                   "Thunar File Manager"
-            safe_install_pkg "mousepad"                 "Mousepad Text Editor"
+            safe_install_pkg "xfce4-whiskermenu-plugin" "Whisker Menu Plugin" optional
+            safe_install_pkg "plank-reloaded"           "Plank Dock" optional
+            safe_install_pkg "thunar"                   "Thunar File Manager" optional
+            safe_install_pkg "mousepad"                 "Mousepad Text Editor" optional
             ;;
         2)
             safe_install_pkg "lxqt"       "LXQt Desktop"
             safe_install_pkg "qterminal"  "QTerminal"
-            safe_install_pkg "pcmanfm-qt" "PCManFM-Qt File Manager"
-            safe_install_pkg "featherpad" "FeatherPad Text Editor"
+            safe_install_pkg "pcmanfm-qt" "PCManFM-Qt File Manager" optional
+            safe_install_pkg "featherpad" "FeatherPad Text Editor" optional
             ;;
         3)
             safe_install_pkg "mate"            "MATE Desktop"
-            safe_install_pkg "mate-tweak"      "MATE Tweak"
-            safe_install_pkg "plank-reloaded"  "Plank Dock"
+            safe_install_pkg "mate-tweak"      "MATE Tweak" optional
+            safe_install_pkg "plank-reloaded"  "Plank Dock" optional
             safe_install_pkg "mate-terminal"   "MATE Terminal"
             ;;
         4)
             safe_install_pkg "plasma-desktop" "KDE Plasma Desktop"
             safe_install_pkg "konsole"        "Konsole Terminal"
-            safe_install_pkg "dolphin"        "Dolphin File Manager"
+            safe_install_pkg "dolphin"        "Dolphin File Manager" optional
             ;;
     esac
 }
@@ -702,7 +725,7 @@ step_gpu() {
         printf "  ${GRAY}~${NC}  %-55s ${GRAY}(keeping TUR stack)${NC}\n" "Existing mesa-zink install detected"
         log "GPU stack: tur (mesa-zink already installed)"
     else
-        safe_install_pkg "mesa" "Mesa (OpenGL + Zink)"
+        safe_install_pkg "mesa" "Mesa (OpenGL + Zink)" || return 1
         if [ ! -f "${TERMUX_PREFIX}/lib/dri/zink_dri.so" ]; then
             GPU_STACK="tur"
             echo -e "  ${YELLOW}⚠${NC}  This Mesa build has no Zink — falling back to TUR mesa-zink."
@@ -716,20 +739,20 @@ step_gpu() {
     # mesa-vulkan-icd-* depends on. Do NOT ask for vulkan-loader-android:
     # vulkan-loader-generic both Provides AND Conflicts with it, so requesting
     # it on a normal install aborts the apt transaction for zero benefit.
-    safe_install_pkg "vulkan-loader-generic" "Vulkan Loader"
+    safe_install_pkg "vulkan-loader-generic" "Vulkan Loader" optional
 
     if [ "$GPU_STACK" == "tur" ]; then
         safe_install_pkg "mesa-zink" "Mesa Zink (OpenGL on Vulkan)"
         if [ "$GPU_DRIVER" == "freedreno" ]; then
-            safe_install_pkg "mesa-zink-vulkan-icd-freedreno" "Freedreno Vulkan ICD (Turnip)"
+            safe_install_pkg "mesa-zink-vulkan-icd-freedreno" "Freedreno Vulkan ICD (Turnip)" optional
         else
-            safe_install_pkg "mesa-zink-vulkan-icd-swrast"    "SwRast Vulkan ICD (software)"
+            safe_install_pkg "mesa-zink-vulkan-icd-swrast"    "SwRast Vulkan ICD (software)" optional
         fi
     else
         if [ "$GPU_DRIVER" == "freedreno" ]; then
-            safe_install_pkg "mesa-vulkan-icd-freedreno" "Freedreno Vulkan ICD (Turnip)"
+            safe_install_pkg "mesa-vulkan-icd-freedreno" "Freedreno Vulkan ICD (Turnip)" optional
         else
-            safe_install_pkg "mesa-vulkan-icd-swrast"    "SwRast Vulkan ICD (software)"
+            safe_install_pkg "mesa-vulkan-icd-swrast"    "SwRast Vulkan ICD (software)" optional
         fi
     fi
 
@@ -740,7 +763,7 @@ step_gpu() {
         if [ -f "${TERMUX_PREFIX}/share/vulkan/icd.d/freedreno_icd.aarch64.json" ]; then
             echo -e "  ${GREEN}✔${NC}  Turnip (Adreno) Vulkan driver in place."
         else
-            echo -e "  ${YELLOW}⚠${NC}  Turnip ICD missing — the desktop will fall back to software rendering."
+            echo -e "  ${YELLOW}⚠${NC}  Turnip ICD missing — stock Mesa will use software rendering."
             log "WARNING: freedreno ICD json not found"
         fi
     fi
@@ -752,7 +775,7 @@ step_audio() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing audio server...${NC}"
     echo ""
-    safe_install_pkg "pulseaudio" "PulseAudio"
+    safe_install_pkg "pulseaudio" "PulseAudio" optional
 }
 
 # ============== STEP 7: APPS ==============
@@ -760,12 +783,12 @@ step_apps() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing applications...${NC}"
     echo ""
-    safe_install_pkg "firefox"  "Firefox Browser"
-    safe_install_pkg "vlc"      "VLC Media Player"
-    safe_install_pkg "git"      "Git Version Control"
-    safe_install_pkg "wget"     "Wget"
-    safe_install_pkg "curl"     "cURL"
-    safe_install_pkg "openssh"  "OpenSSH (SSH server + client)"
+    safe_install_pkg "firefox"  "Firefox Browser" optional
+    safe_install_pkg "vlc"      "VLC Media Player" optional
+    safe_install_pkg "git"      "Git Version Control" optional
+    safe_install_pkg "wget"     "Wget" optional
+    safe_install_pkg "curl"     "cURL" optional
+    safe_install_pkg "openssh"  "OpenSSH (SSH server + client)" optional
 }
 
 # ============== STEP 8: PYTHON ==============
@@ -773,8 +796,8 @@ step_python() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing Python...${NC}"
     echo ""
-    safe_install_pkg "python"     "Python 3"
-    safe_install_pkg "python-pip" "pip (Python Package Manager)"
+    safe_install_pkg "python"     "Python 3" optional
+    safe_install_pkg "python-pip" "pip (Python Package Manager)" optional
 }
 
 # ============== STEP 9 (OPTIONAL): WINE ==============
@@ -794,8 +817,8 @@ step_wine() {
 
     echo -e "  ${GRAY}Wine is a large download (~500 MB) — this step can take a while.${NC}"
 
-    safe_install_pkg "hangover-wine"     "Hangover Wine"
-    safe_install_pkg "hangover-wowbox64" "Box64 Wrapper"
+    safe_install_pkg "hangover-wine"     "Hangover Wine" optional
+    safe_install_pkg "hangover-wowbox64" "Box64 Wrapper" optional
 
     local WINE_BIN="${TERMUX_PREFIX}/opt/hangover-wine/bin"
     if [ -f "${WINE_BIN}/wine" ]; then
@@ -806,6 +829,7 @@ step_wine() {
     else
         echo -e "  ${YELLOW}  Wine binary not found at expected path — symlinks skipped.${NC}"
         log "WARNING: Wine binary not found at $WINE_BIN"
+        INSTALL_WINE="no"
     fi
 }
 
@@ -848,8 +872,22 @@ EOF
     fi
 
     if [ "$GPU_DRIVER" == "freedreno" ]; then
-        echo "export VK_ICD_FILENAMES=${TERMUX_PREFIX}/share/vulkan/icd.d/freedreno_icd.aarch64.json" \
-            >> ~/.config/linux-gpu.sh
+        {
+            printf 'if [ -r %q ]; then\n' "${TERMUX_PREFIX}/share/vulkan/icd.d/freedreno_icd.aarch64.json"
+            printf '    export VK_ICD_FILENAMES=%q\n' "${TERMUX_PREFIX}/share/vulkan/icd.d/freedreno_icd.aarch64.json"
+            echo 'else'
+            echo '    unset VK_ICD_FILENAMES'
+            if [ "$GPU_STACK" = "stock" ]; then
+                # Stock Mesa includes llvmpipe. A nonexistent forced ICD
+                # prevents Vulkan from considering any fallback at all.
+                echo '    unset MESA_LOADER_DRIVER_OVERRIDE'
+                echo '    export GALLIUM_DRIVER=llvmpipe LIBGL_ALWAYS_SOFTWARE=1'
+                echo '    echo "[!] Turnip ICD missing; using Mesa software rendering."'
+            else
+                echo '    echo "[!] Turnip ICD missing; install a matching TUR Vulkan driver or switch to stock Mesa."'
+            fi
+            echo 'fi'
+        } >> ~/.config/linux-gpu.sh
     fi
 
     if [ "$DE_CHOICE" == "1" ] || [ "$DE_CHOICE" == "3" ]; then
@@ -869,34 +907,48 @@ PLANKEOF
 
     case $DE_CHOICE in
         1)
-            EXEC_CMD="exec startxfce4"
+            DESKTOP_COMMAND="startxfce4"
             KILL_CMD="pkill -9 xfce4-session 2>/dev/null; pkill -9 plank 2>/dev/null"
             ;;
         2)
-            EXEC_CMD="exec startlxqt"
+            DESKTOP_COMMAND="startlxqt"
             KILL_CMD="pkill -9 lxqt-session 2>/dev/null"
             ;;
         3)
-            EXEC_CMD="exec mate-session"
+            DESKTOP_COMMAND="mate-session"
             KILL_CMD="pkill -9 mate-session 2>/dev/null; pkill -9 plank 2>/dev/null"
             ;;
         4)
-            EXEC_CMD="(sleep 5 && pkill -9 plasmashell && plasmashell) >/dev/null 2>&1 &\nexec startplasma-x11"
-            KILL_CMD="pkill -9 startplasma-x11 2>/dev/null; pkill -9 kwin_x11 2>/dev/null"
+            DESKTOP_COMMAND="startplasma-x11"
+            KILL_CMD="pkill -9 startplasma-x11 2>/dev/null; pkill -9 plasmashell 2>/dev/null; pkill -9 kwin_x11 2>/dev/null"
             ;;
     esac
 
-    cat > ~/start-linux.sh << LAUNCHEREOF
-#!${TERMUX_PREFIX}/bin/bash
+    # Only these known values are expanded while writing the launcher. Keep
+    # the body literal: backticks in its comments used to execute PulseAudio
+    # and Termux-X11 here, hanging setup at the launcher step (issue #10).
+    {
+        printf '#!%s/bin/bash\n' "$TERMUX_PREFIX"
+        printf 'TERMUX_PREFIX=%q\nDE_NAME=%q\nDESKTOP_COMMAND=%q\n' \
+            "$TERMUX_PREFIX" "$DE_NAME" "$DESKTOP_COMMAND"
+        printf 'stop_desktop_session() {\n    %s\n}\n' "$KILL_CMD"
+        cat << 'LAUNCHEREOF'
 echo ""
 echo "[*] Starting ${DE_NAME} on Termux-X11..."
 echo ""
+
+for required_command in termux-x11 dbus-daemon "$DESKTOP_COMMAND"; do
+    if ! command -v "$required_command" >/dev/null 2>&1; then
+        echo "[!] Missing command: $required_command. Re-run termux-linux-setup.sh and check ~/termux-setup.log."
+        exit 1
+    fi
+done
 
 source ~/.config/linux-gpu.sh 2>/dev/null
 
 echo "[*] Cleaning up old sessions..."
 pkill -9 -f "termux.x11" 2>/dev/null || true
-${KILL_CMD} || true
+stop_desktop_session || true
 pkill -9 -f "dbus-daemon" 2>/dev/null || true
 sleep 0.5
 
@@ -909,44 +961,40 @@ sleep 0.5
 # Clearing the stale state and starting the bus at a fixed, predictable
 # address fixes both. (issue #5)
 echo "[*] Starting D-Bus session bus..."
-export XDG_RUNTIME_DIR="\${TMPDIR:-${TERMUX_PREFIX}/tmp}"
-mkdir -p "\$XDG_RUNTIME_DIR" 2>/dev/null || true
-chmod 700 "\$XDG_RUNTIME_DIR" 2>/dev/null || true
+export XDG_RUNTIME_DIR="${TMPDIR:-${TERMUX_PREFIX}/tmp}"
+mkdir -p "$XDG_RUNTIME_DIR" 2>/dev/null || true
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
 DBUS_DIR="${TERMUX_PREFIX}/var/run/dbus"
-rm -rf "\$HOME/.dbus" 2>/dev/null || true
-rm -f "\${XDG_RUNTIME_DIR}/dbus-"* 2>/dev/null || true
-mkdir -p "\$DBUS_DIR" "${TERMUX_PREFIX}/var/lib/dbus"
-rm -f "\$DBUS_DIR/session_bus_socket"
+rm -rf "$HOME/.dbus" 2>/dev/null || true
+rm -f "${XDG_RUNTIME_DIR}/dbus-"* 2>/dev/null || true
+mkdir -p "$DBUS_DIR" "${TERMUX_PREFIX}/var/lib/dbus"
+rm -f "$DBUS_DIR/session_bus_socket"
 dbus-uuidgen --ensure >/dev/null 2>&1 || true
 
-export DBUS_SESSION_BUS_ADDRESS="unix:path=\$DBUS_DIR/session_bus_socket"
-if command -v dbus-daemon >/dev/null 2>&1; then
-    dbus-daemon --session --address="\$DBUS_SESSION_BUS_ADDRESS" --nopidfile --fork
-else
-    echo "[!] dbus-daemon not found. Run: pkg install dbus"
-    unset DBUS_SESSION_BUS_ADDRESS
+export DBUS_SESSION_BUS_ADDRESS="unix:path=$DBUS_DIR/session_bus_socket"
+if ! dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nopidfile --fork; then
+    echo "[!] D-Bus could not start. Check the error above before launching the desktop."
+    exit 1
 fi
 
 echo "[*] Starting PulseAudio..."
 unset PULSE_SERVER
-pulseaudio --kill 2>/dev/null || true
-sleep 0.3
-# Both calls are time-bounded on purpose. `pulseaudio --start` and `pactl` can
+# All calls are time-bounded on purpose. `pulseaudio --start` and `pactl` can
 # block indefinitely when the audio HAL is wedged, and the "|| true" below only
 # rescues a command that *fails* -- not one that never returns. Unbounded, a
 # stuck PulseAudio stalls the launcher here and `termux-x11` is never started,
 # so the desktop silently never appears (Termux-X11 just says "Not connected")
 # with no error to act on. Audio is optional; it must never hold up the display.
 if command -v timeout >/dev/null 2>&1; then
-    timeout 10 pulseaudio --start --exit-idle-time=-1 \
+    timeout -k 2 5 pulseaudio --kill 2>/dev/null || true
+    sleep 0.3
+    timeout -k 2 10 pulseaudio --start --exit-idle-time=-1 \
         || echo "[!] PulseAudio did not start - continuing without audio."
     sleep 1
-    timeout 5 pactl load-module module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1 2>/dev/null || true
+    timeout -k 2 5 pactl load-module module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1 2>/dev/null || true
 else
-    pulseaudio --start --exit-idle-time=-1 || true
-    sleep 1
-    pactl load-module module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1 2>/dev/null || true
+    echo "[!] timeout is unavailable; skipping audio so it cannot block the desktop. Run: pkg install coreutils"
 fi
 export PULSE_SERVER=127.0.0.1
 
@@ -965,23 +1013,28 @@ echo "  ✔ Desktop launching! Open the Termux-X11 app."
 echo "─────────────────────────────────────────────────"
 echo ""
 
-${EXEC_CMD}
+exec "$DESKTOP_COMMAND"
 LAUNCHEREOF
+    } > ~/start-linux.sh
     chmod +x ~/start-linux.sh
     echo -e "  ${GREEN}✔ Created ~/start-linux.sh${NC}"
 
-    cat > ~/stop-linux.sh << STOPEOF
-#!${TERMUX_PREFIX}/bin/bash
+    {
+        printf '#!%s/bin/bash\n' "$TERMUX_PREFIX"
+        printf 'TERMUX_PREFIX=%q\nDE_NAME=%q\n' "$TERMUX_PREFIX" "$DE_NAME"
+        printf 'stop_desktop_session() {\n    %s\n}\n' "$KILL_CMD"
+        cat << 'STOPEOF'
 echo "[*] Stopping ${DE_NAME}..."
 pkill -9 -f "termux.x11" 2>/dev/null || true
 pkill -9 -f "pulseaudio"  2>/dev/null || true
-${KILL_CMD} || true
+stop_desktop_session || true
 pkill -9 -f "dbus-daemon" 2>/dev/null || true
 # Leave no dead socket for the next start to trip over.
 rm -f "${TERMUX_PREFIX}/var/run/dbus/session_bus_socket" 2>/dev/null || true
-rm -rf "\$HOME/.dbus" 2>/dev/null || true
+rm -rf "$HOME/.dbus" 2>/dev/null || true
 echo "[✔] Desktop stopped."
 STOPEOF
+    } > ~/stop-linux.sh
     chmod +x ~/stop-linux.sh
     echo -e "  ${GREEN}✔ Created ~/stop-linux.sh${NC}"
 }
@@ -1059,6 +1112,10 @@ COMPLETE
     echo -e "  ${WHITE}Desktop  : ${GREEN}${DE_NAME}${NC}"
     echo -e "  ${WHITE}GPU      : ${GREEN}${GPU_DRIVER}${NC}"
     echo -e "  ${WHITE}Wine     : ${GREEN}${INSTALL_WINE}${NC}"
+    if [ "${#OPTIONAL_FAILURES[@]}" -gt 0 ]; then
+        echo -e "  ${YELLOW}Optional packages unavailable: ${OPTIONAL_FAILURES[*]}${NC}"
+        echo "  Those features are not installed; see the log and re-run to retry."
+    fi
     echo ""
     echo -e "${YELLOW}  ─────────────────────────────────────────────────${NC}"
     echo -e "  ${WHITE}▶  START DESKTOP:${NC}  ${GREEN}bash ~/start-linux.sh${NC}"
@@ -1108,11 +1165,13 @@ main() {
     fi
     setup_environment
 
-    step_update
-    step_repos
+    step_update || return 1
+    step_repos || return 1
     step_x11
     step_desktop
+    check_required_packages || return 1
     step_gpu
+    check_required_packages || return 1
     step_audio
     step_apps
     step_python

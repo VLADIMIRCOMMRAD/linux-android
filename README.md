@@ -1,10 +1,21 @@
 # Linux on Android — Repurpose Your Old Phone
 
-[![shellcheck](https://github.com/mayukh4/linux-android/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/mayukh4/linux-android/actions/workflows/shellcheck.yml)
+This is the maintained fork at [VLADIMIRCOMMRAD/linux-android](https://github.com/VLADIMIRCOMMRAD/linux-android), based on [mayukh4/linux-android](https://github.com/mayukh4/linux-android). The original project, license and video credits are retained. Install commands below download this fork's fixes.
+
+### Fixes in this fork
+
+- Fix the launcher-generation hang reported in upstream [#10](https://github.com/mayukh4/linux-android/issues/10), related to the Step 9 investigation in [#7](https://github.com/mayukh4/linux-android/issues/7). Creating launchers no longer runs PulseAudio or Termux-X11 accidentally.
+- Generate a valid KDE startup command and check required commands before starting a desktop.
+- Preserve existing Home Assistant configuration when rerunning setup and report required installation failures.
+- Exercise generated launchers and failure paths with automated regression tests.
+
+The ADB/Bluetooth proposal in upstream [#11](https://github.com/mayukh4/linux-android/issues/11) is a feature request, not an implemented capability of this fork. Installing ADB alone does not expose Android Bluetooth or USB devices to Home Assistant.
+
+[![shellcheck](https://github.com/VLADIMIRCOMMRAD/linux-android/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/VLADIMIRCOMMRAD/linux-android/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Platform: Android](https://img.shields.io/badge/platform-Android%207%2B-3ddc84.svg)](https://termux.dev)
 [![Termux](https://img.shields.io/badge/Termux-F--Droid-000000.svg)](https://f-droid.org/en/packages/com.termux/)
-[![Stars](https://img.shields.io/github/stars/mayukh4/linux-android?style=flat)](https://github.com/mayukh4/linux-android/stargazers)
+[![Stars](https://img.shields.io/github/stars/VLADIMIRCOMMRAD/linux-android?style=flat)](https://github.com/VLADIMIRCOMMRAD/linux-android/stargazers)
 [![listed on unshittify.dev](https://unshittify.dev/badge.svg)](https://unshittify.dev/p/linux-android/)
 
 Turn any old Android phone or tablet into a **Linux desktop** or a **smart home server** — no PC, no root, no cloud. Just [Termux](https://termux.dev).
@@ -16,7 +27,7 @@ One script installs a **GPU-accelerated desktop** (XFCE4, LXQt, MATE or KDE Plas
 In [Termux from F-Droid](https://f-droid.org/en/packages/com.termux/), with the [Termux-X11 app](https://github.com/termux/termux-x11/releases) installed:
 
 ```bash
-pkg upgrade -y && curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-linux-setup.sh | bash
+pkg update && pkg upgrade -y && pkg install -y curl && curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh | bash
 ```
 
 Then `bash ~/start-linux.sh` and open Termux-X11. Home Assistant instead? Swap in `setup-homeassistant.sh`. Full walkthrough [below](#installation).
@@ -62,10 +73,12 @@ You can run both on the same phone — they don't conflict.
 ### Software
 | App | Where to Get It |
 |---|---|
-| **Termux** | [F-Droid](https://f-droid.org/en/packages/com.termux/) — **do not use the Play Store version, it is outdated** |
+| **Termux** | [F-Droid](https://f-droid.org/en/packages/com.termux/) or [official GitHub releases](https://github.com/termux/termux-app/releases) |
 | **Termux-X11** | [GitHub Releases](https://github.com/termux/termux-x11/releases) — download the latest `.apk` |
 
 > **Note on rooting / custom ROMs:** This script works on stock Android too. The video demonstrates it running on **LineageOS** on a OnePlus 5T. Rooting is not required by the script itself.
+
+The Google Play build is a separate experimental branch with different behavior; this guide targets F-Droid/GitHub builds. Keep Termux plugin apps such as Termux:API from the same source as Termux. See the [official installation guidance](https://github.com/termux/termux-app#installation).
 
 ---
 
@@ -86,7 +99,7 @@ If you're unsure, go with **XFCE4**.
 
 ### Step 1 — Install required apps
 
-Install **Termux** from F-Droid and **Termux-X11** from GitHub (links above). Grant both apps any permissions they request.
+Install **Termux** from F-Droid and **Termux-X11** from GitHub (links above). The Termux-X11 Android APK and the `termux-x11-nightly` package installed by the script are both needed.
 
 ### Step 2 — Pre-upgrade Termux (important — do this first)
 
@@ -94,7 +107,8 @@ Open Termux and run:
 
 ```bash
 termux-wake-lock
-pkg upgrade -y
+pkg update && pkg upgrade -y
+pkg install -y curl
 ```
 
 The `termux-wake-lock` command keeps Termux alive when your screen turns off — without it, Android can kill the process mid-install. The `pkg upgrade` brings your base system up to date before the script runs, preventing a known crash involving `libpcre` and `libandroid-selinux`.
@@ -102,7 +116,7 @@ The `termux-wake-lock` command keeps Termux alive when your screen turns off —
 ### Step 3 — Run the script
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-linux-setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh | bash
 ```
 
 The script will ask you to choose a desktop environment and whether you want Wine. Everything else is automatic.
@@ -110,12 +124,12 @@ The script will ask you to choose a desktop environment and whether you want Win
 Prefer to read it before running it? Download first:
 
 ```bash
-curl -O https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-linux-setup.sh
+curl -fL -o termux-linux-setup.sh https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh
 less termux-linux-setup.sh
 bash termux-linux-setup.sh
 ```
 
-Installation takes **10–30 minutes** depending on your internet speed. Each package shows a live timer and the latest download line, so you can tell a big download from a real hang. A full log is saved to `~/termux-setup.log`. Re-running the script is safe — anything already installed is skipped.
+Installation takes **10–30 minutes** depending on your internet speed. Each package shows a live timer and the latest download line. The desktop install log is `~/termux-setup.log`. Rerunning skips installed packages and regenerates launcher/GPU files; back up any edits you made to those generated files first.
 
 <details>
 <summary>Unattended install (no questions)</summary>
@@ -123,7 +137,7 @@ Installation takes **10–30 minutes** depending on your internet speed. Each pa
 Pass choices as flags, and `-y` to accept defaults for anything not given:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-linux-setup.sh | bash -s -- --de kde --no-wine -y
+curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh | bash -s -- --de kde --no-wine -y
 ```
 
 | Flag | Meaning |
@@ -308,12 +322,12 @@ Home Assistant Core runs inside a lightweight Ubuntu container (via proot-distro
 ### Installation
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/setup-homeassistant.sh | bash
+curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/setup-homeassistant.sh | bash
 ```
 
 Unattended: `... | bash -s -- --hacs -y`. Run `bash setup-homeassistant.sh --help` for all options.
 
-Installation takes **15–45 minutes** depending on your phone. The longest step is compiling Home Assistant's Python dependencies (numpy, cryptography, etc.) inside the Ubuntu container.
+The Home Assistant installation log is `~/homeassistant-setup.log`. Installation takes **15–45 minutes** depending on your phone. The longest step is compiling Home Assistant's Python dependencies (numpy, cryptography, etc.) inside the Ubuntu container.
 
 ### Starting and stopping
 
@@ -328,19 +342,11 @@ bash ~/stop-homeassistant.sh
 bash ~/upgrade-homeassistant.sh
 ```
 
-### HACS — the community add-on store
+### HACS — community integrations and themes
 
-[HACS](https://www.hacs.xyz) is the community store for integrations, themes, and Lovelace cards that aren't in HA core. The setup script offers to install it for you.
+According to the [HACS installation documentation](https://www.hacs.xyz/docs/use/download/download/), Home Assistant 2026.11 and newer includes HACS as Marketplace. The installer skips the legacy custom integration on those versions. On 2026.10 and older, choose `--hacs` to install it. Existing custom integrations are preserved; there is no need to delete `custom_components/`.
 
-> **Install HACS before any other custom integration.** If `custom_components/` already contains hand-installed integrations, remove them first — otherwise HACS can end up in a broken state.
-
-To install it by hand after the fact:
-
-```bash
-proot-distro login ubuntu -- sh -c "cd ~/hass-config && wget -O - https://get.hacs.xyz | bash -"
-```
-
-Then restart Home Assistant and finish setup in the dashboard:
+For the legacy HACS integration, restart Home Assistant and finish setup in the dashboard:
 
 1. **Settings → Devices & Services → + Add Integration**
 2. Search for **HACS**
@@ -349,6 +355,8 @@ Then restart Home Assistant and finish setup in the dashboard:
 Full configuration docs: [hacs.xyz/docs/use/configuration/basic](https://www.hacs.xyz/docs/use/configuration/basic/).
 
 ### Upgrading Home Assistant
+
+Run these commands in **Termux**. The configuration and virtual environment live at `$HOME/hass-config` and `$HOME/hass-venv` in Termux and are bound into Ubuntu at the same absolute paths. Ubuntu's `~` normally means `/root`, which is a different directory. Rerunning setup preserves an existing `configuration.yaml`.
 
 ```bash
 bash ~/upgrade-homeassistant.sh
@@ -367,32 +375,10 @@ bash ~/upgrade-homeassistant.sh
 
 `proot-distro install ubuntu` tracks a rolling Ubuntu release, so which Python you get depends on when you installed the container. `bash ~/upgrade-homeassistant.sh` prints your Python version and tells you if you have hit the ceiling.
 
-<details>
-<summary>Advanced: get past the ceiling with a newer Python</summary>
+Home Assistant Core in a Python virtual environment is an [unsupported installation method](https://www.home-assistant.io/blog/2025/05/22/deprecating-core-and-supervised-installation-methods-and-32-bit-systems/). This script is an experimental Termux setup, and individual integrations can have additional platform requirements.
 
-This is not automated because it replaces the interpreter under a working install. Back up `~/hass-config` first.
+If your Python is too old, back up `~/hass-config` before changing the Ubuntu interpreter. Create and test a separate virtual environment, then update **both** generated start and upgrade scripts to its absolute path. The installer does not migrate interpreters automatically. Avoid running two HA instances against the same configuration.
 
-```bash
-proot-distro login ubuntu
-
-# 1. Fetch a standalone CPython 3.14 (no PPA, no compiling)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-export PATH="$HOME/.local/bin:$PATH"
-uv python install 3.14
-
-# 2. Build a fresh venv on it, leaving the old one in place
-uv venv --python 3.14 ~/hass-venv-314
-~/hass-venv-314/bin/python -m pip install --upgrade pip wheel setuptools
-uv pip install --python ~/hass-venv-314/bin/python homeassistant
-
-# 3. Test it against your existing config before switching over
-~/hass-venv-314/bin/hass -c ~/hass-config
-```
-
-If it starts cleanly, point `~/start-homeassistant.sh` at `hass-venv-314/bin/hass`. If not, your old `~/hass-venv` is untouched — just keep using it.
-
-Note that Home Assistant Core (the Python/venv install method) was [deprecated upstream in 2025](https://www.home-assistant.io/blog/2025/05/22/deprecating-core-and-supervised-installation-methods-and-32-bit-systems/). It still works and still gets releases; it just is not an officially supported install method any more. On a phone it remains the only realistic option — HA OS and HA Container both need Docker or bare metal.
-</details>
 
 ### Accessing the dashboard
 
@@ -418,13 +404,14 @@ The first launch takes **5–10 minutes** to initialize. You'll create your admi
 
 ### Adding Tuya / Smart Life devices
 
-Tuya devices connect through the Tuya cloud API, which works regardless of local network restrictions:
+Use the [official Tuya integration setup](https://www.home-assistant.io/integrations/tuya/):
 
-1. Go to [iot.tuya.com](https://iot.tuya.com) and create a free developer account
-2. Create a **Cloud Project** → select your data center region → add the **Smart Home** API
-3. Go to **Devices** → **Link Tuya App Account** → scan the QR code with the Smart Life / Tuya Smart app
-4. In HA dashboard: **Settings → Devices & Services → + Add Integration → Tuya**
-5. Enter your **Access ID** and **Access Secret** from the Tuya IoT console
+1. Add your devices to the Tuya Smart or Smart Life app.
+2. Find **Me → Settings → Account and Security → User Code** in that app.
+3. In Home Assistant, choose **Settings → Devices & Services → Add Integration → Tuya**.
+4. Enter the User Code and scan the displayed QR code with the app. A second screen helps.
+
+This integration uses Tuya's cloud service; it requires internet access.
 
 ### Keeping Home Assistant running in the background
 
@@ -457,6 +444,18 @@ Ideas for what you can do with your old Android phone running this setup:
 ---
 
 ## Troubleshooting
+
+**Stuck at “Setting up scripts” / Step 9, or “No valid command specified”**
+This is a launcher-generation bug in the upstream version, not a slow download. Backticks in an unquoted here-document executed commands from comments while writing `start-linux.sh`. This fork uses literal templates so those commands only run when you start the desktop.
+
+Stop the old installer with Ctrl+C. In Termux, download the fixed script from **this fork**, then rerun it with your original desktop choice (replace `xfce` with `lxqt`, `mate`, or `kde` if needed):
+
+```bash
+curl -fL -o ~/termux-linux-setup.sh https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh &&
+bash ~/termux-linux-setup.sh --de xfce --no-wine -y
+```
+
+Installed packages are skipped. The launcher files are regenerated. Then run `bash ~/start-linux.sh` and open Termux-X11. If the displayed step explicitly says **Installing Hangover Wine**, use the download troubleshooting below instead; step numbers depend on the selected options.
 
 **The install looks stuck on one step**
 Big packages (KDE Plasma, Firefox, Wine) are hundreds of MB and can take 10+ minutes on a slow connection or phone. The spinner shows the elapsed time and the latest line from apt — if that line keeps changing, it is working. If nothing moves for 5 minutes the script prints a warning. Then:
@@ -518,10 +517,10 @@ Make sure `sshd` is running (`ps aux | grep sshd`). If not, run `sshd` again. Co
 Wine needs an active display. Make sure your desktop is running first, then run `winecfg` from the terminal inside the desktop.
 
 **Home Assistant: "pip install homeassistant" fails with compilation errors**
-This usually means a build dependency is missing. Run `proot-distro login ubuntu` and check that `python3-dev`, `libffi-dev`, `libssl-dev`, and `cargo` are installed. Then retry: `source ~/hass-venv/bin/activate && pip install homeassistant`.
+This usually means a build dependency is missing. Run `proot-distro login ubuntu` and check that `python3-dev`, `libffi-dev`, `libssl-dev`, and `cargo` are installed. Then rerun the setup script from Termux. Do not use Ubuntu's `~/hass-venv`: the environment is stored under the Termux home directory.
 
 **Home Assistant: dashboard not loading at port 8123**
-First launch takes 5–10 minutes. Check if HA is still initializing: `proot-distro login ubuntu -- bash -c "source ~/hass-venv/bin/activate && hass -c ~/hass-config"` and watch the output. Make sure your phone and browser are on the same WiFi network.
+First launch takes 5–10 minutes. Check if HA is still initializing: `bash ~/start-homeassistant.sh` and watch the output. Make sure your phone and browser are on the same WiFi network.
 
 **Home Assistant: "address already in use" error on startup**
 Another HA instance is already running. Stop it first with `bash ~/stop-homeassistant.sh`, or manually: `pkill -f "hass -c"`.
@@ -539,11 +538,11 @@ This is expected on Android. The `/proc/net/dev` restriction on Android 10+ prev
 
 **Will it work on my phone?** Any arm64 (64-bit) Android 7+ phone or tablet with 3 GB+ RAM should work. Qualcomm Snapdragon (Adreno GPU) gets full hardware acceleration; Mali, PowerVR and others fall back to software Vulkan, so pick XFCE4 or LXQt there.
 
-**Can I use the Play Store version of Termux?** No — it has been outdated for years and cannot install current packages. Use F-Droid or the [Termux GitHub releases](https://github.com/termux/termux-app/releases).
+**Can I use the Play Store version of Termux?** This guide targets F-Droid or the [Termux GitHub releases](https://github.com/termux/termux-app/releases). Google Play has a separate experimental build with differences; see the [Termux installation notes](https://github.com/termux/termux-app#installation).
 
 **Can I use a keyboard, mouse and external monitor?** Yes. Bluetooth or USB keyboards and mice work in Termux-X11, and on phones with DisplayPort-over-USB-C (or Samsung DeX) you can put the desktop on a monitor.
 
-**How do I uninstall?** Run `bash ~/stop-linux.sh`, then remove the packages with `pkg uninstall <name>`, or simply clear Termux's app data to start fresh. For Home Assistant: `proot-distro remove ubuntu` and delete `~/hass-config`.
+**How do I uninstall?** Run `bash ~/stop-linux.sh`, then remove the packages with `pkg uninstall <name>`, or simply clear Termux's app data to start fresh. For Home Assistant, stop it first and back up `~/hass-config`. Only remove the Ubuntu container with `proot-distro remove ubuntu` if you no longer need anything else in that container. The Termux-side `~/hass-venv`, `~/hass-config` and generated launcher files remain; remove them separately only when you no longer need them. Clearing Termux app data removes all Termux files.
 
 ---
 

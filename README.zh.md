@@ -1,5 +1,11 @@
 # 旧安卓手机再利用
 
+本仓库是 [VLADIMIRCOMMRAD/linux-android](https://github.com/VLADIMIRCOMMRAD/linux-android) 分支，基于 [mayukh4/linux-android](https://github.com/mayukh4/linux-android)。下载链接使用本分支的修复版本。
+
+**Step 9 卡住或显示 “No valid command specified”：** 上游脚本生成启动器时会误执行注释中的反引号命令。本分支已改用字面模板并修复 KDE 启动命令。按 Ctrl+C 停止旧脚本，重新下载本分支脚本并选择原来的桌面环境；已安装的软件包会跳过，启动器会重新生成。详细恢复命令见[英文故障排除](README.md#troubleshooting)。
+
+Home Assistant 配置和虚拟环境位于 Termux 的 `$HOME/hass-config` 和 `$HOME/hass-venv`；Ubuntu 内的 `~` 通常是 `/root`，不是同一路径。重新安装会保留已有配置。桌面日志为 `~/termux-setup.log`，HA 日志为 `~/homeassistant-setup.log`。
+
 **[English](README.md)**
 
 [![listed on unshittify.dev](https://unshittify.dev/badge.svg)](https://unshittify.dev/p/linux-android/)
@@ -49,7 +55,7 @@ graph LR
 ### 软件
 | 应用 | 获取方式 |
 |---|---|
-| **Termux** | [F-Droid](https://f-droid.org/en/packages/com.termux/) — **请勿使用 Play Store 版本，该版本已过时** |
+| **Termux** | [F-Droid](https://f-droid.org/en/packages/com.termux/) — 或使用 [Termux 官方 GitHub 版本](https://github.com/termux/termux-app/releases)；本指南不面向独立的 Google Play 实验分支 |
 | **Termux-X11** | [GitHub Releases](https://github.com/termux/termux-x11/releases) — 下载最新 `.apk` |
 
 > **关于 Root / 自定义 ROM 的说明：** 本脚本在原版安卓上即可运行。视频演示使用的是 **LineageOS** 系统的一加 5T。脚本本身不需要 Root。
@@ -89,7 +95,7 @@ pkg upgrade -y
 ### 步骤 3 — 运行脚本
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-linux-setup.sh | bash
+curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh | bash
 ```
 
 脚本会询问你选择哪个桌面环境以及是否安装 Wine，其余全部自动完成。想先阅读脚本再运行，可以用 `curl -O` 下载后执行 `bash termux-linux-setup.sh`。
@@ -99,7 +105,7 @@ curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-l
 **无人值守安装**（不提问）：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/termux-linux-setup.sh | bash -s -- --de kde --no-wine -y
+curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh | bash -s -- --de kde --no-wine -y
 ```
 
 `--de` 可选 `xfce`（默认）、`lxqt`、`mate`、`kde`；`--wine` / `--no-wine`；`-y` 表示全部使用默认值；`--help` 查看全部选项。
@@ -263,7 +269,7 @@ Home Assistant Core 运行在手机上的轻量级 Ubuntu 容器中（通过 pro
 ### 安装
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/setup-homeassistant.sh | bash
+curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/setup-homeassistant.sh | bash
 ```
 
 无人值守：`... | bash -s -- --hacs -y`。运行 `bash setup-homeassistant.sh --help` 查看全部选项。
@@ -287,12 +293,12 @@ bash ~/upgrade-homeassistant.sh
 
 [HACS](https://www.hacs.xyz) 是社区集成、主题和 Lovelace 卡片的商店，收录了 HA 核心之外的内容。安装脚本会询问是否为你安装。
 
-> **请在安装任何其他自定义集成之前先安装 HACS。** 如果 `custom_components/` 中已有手动安装的集成，请先删除它们，否则 HACS 可能会处于损坏状态。
+> 根据 [HACS 文档](https://www.hacs.xyz/docs/use/download/download/)，HA 2026.11 起已内置 Marketplace，无需安装旧版 HACS。脚本会检测版本。已有的 `custom_components/` 应保留，不必删除。以下手动步骤仅适用于旧版 HA。
 
 事后手动安装：
 
 ```bash
-proot-distro login ubuntu -- sh -c "cd ~/hass-config && wget -O - https://get.hacs.xyz | bash -"
+bash setup-homeassistant.sh --hacs -y
 ```
 
 然后重启 Home Assistant，并在仪表盘中完成设置：
@@ -348,13 +354,7 @@ http://<你的手机IP>:8123
 
 ### 添加 Tuya / Smart Life 设备
 
-Tuya 设备通过 Tuya 云 API 连接，不受本地网络限制影响：
-
-1. 前往 [iot.tuya.com](https://iot.tuya.com) 创建免费开发者账户
-2. 创建**云项目** → 选择你的数据中心区域 → 添加**智能家居** API
-3. 进入**设备** → **关联涂鸦 App 账号** → 使用 Smart Life / Tuya Smart 应用扫描二维码
-4. 在 HA 仪表盘中：**设置 → 设备与服务 → + 添加集成 → Tuya**
-5. 输入 Tuya IoT 控制台中的 **Access ID** 和 **Access Secret**
+按 [Home Assistant 官方 Tuya 文档](https://www.home-assistant.io/integrations/tuya/)操作：先在 Smart Life / Tuya Smart 应用添加设备，再从“我 → 设置 → 账户与安全”取得 User Code。在 HA 添加 Tuya 集成，输入 User Code 并用手机应用扫描二维码。该集成需要互联网连接。
 
 ### 保持 Home Assistant 后台运行
 
@@ -443,10 +443,10 @@ dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nopidfile --fork
 Wine 需要活跃的显示环境。确保桌面已运行，然后在桌面内的终端中运行 `winecfg`。
 
 **Home Assistant："pip install homeassistant"编译错误**
-通常表示缺少构建依赖。运行 `proot-distro login ubuntu` 并确认已安装 `python3-dev`、`libffi-dev`、`libssl-dev` 和 `cargo`。然后重试：`source ~/hass-venv/bin/activate && pip install homeassistant`。
+通常表示缺少构建依赖。运行 `proot-distro login ubuntu` 并确认已安装 `python3-dev`、`libffi-dev`、`libssl-dev` 和 `cargo`。然后重试：在 Termux 中重新运行安装脚本。
 
 **Home Assistant：8123 端口仪表盘无法加载**
-首次启动需要 5–10 分钟。检查 HA 是否仍在初始化：`proot-distro login ubuntu -- bash -c "source ~/hass-venv/bin/activate && hass -c ~/hass-config"` 并查看输出。确保手机和浏览器在同一 WiFi 网络中。
+首次启动需要 5–10 分钟。检查 HA 是否仍在初始化：`bash ~/start-homeassistant.sh` 并查看输出。确保手机和浏览器在同一 WiFi 网络中。
 
 **Home Assistant：启动时出现"address already in use"错误**
 已有 HA 实例在运行。先停止它：`bash ~/stop-homeassistant.sh`，或手动停止：`pkill -f "hass -c"`。

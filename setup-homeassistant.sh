@@ -24,6 +24,7 @@ TERMUX_HOME="${HOME:-/data/data/com.termux/files/home}"
 CURRENT_STEP=0
 TOTAL_STEPS=7
 INSTALL_HACS="no"
+HACS_READY="no"
 
 HACS_FROM_FLAG=""
 ASSUME_YES="no"
@@ -52,13 +53,13 @@ Install Home Assistant Core on Android (Termux + proot-distro Ubuntu).
 Run with no options for the interactive installer.
 
 Options:
-  --hacs        Also install HACS, the community store (default)
+  --hacs        Install legacy HACS when needed (default; built in on HA 2026.11+)
   --no-hacs     Skip HACS
   -y, --yes     Don't ask anything; use the flags above or the defaults
   -h, --help    Show this help
 
 One-line install:
-  curl -fsSL https://raw.githubusercontent.com/mayukh4/linux-android/main/setup-homeassistant.sh | bash
+  curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/setup-homeassistant.sh | bash
 
 Re-running is safe: finished steps are skipped. Install log: ~/termux-setup.log
 USAGE
@@ -241,23 +242,8 @@ safe_install_pkg() {
         return 0
     fi
 
-    local conflicts
-    conflicts=$(apt-cache show "$pkg" 2>/dev/null \
-        | grep -i "^Conflicts:" \
-        | sed 's/^Conflicts://i' \
-        | tr ',' '\n' \
-        | awk '{print $1}')
-
-    for conflict in $conflicts; do
-        [ -z "$conflict" ] && continue
-        if [ "$(dpkg-query -W -f='${db:Status-Status}' "$conflict" 2>/dev/null)" = "installed" ]; then
-            printf "  ${YELLOW}⚠${NC}  %-55s ${YELLOW}(skipped — conflicts with: %s)${NC}\n" \
-                "$name" "$conflict"
-            log "SKIP (conflict with $conflict): $pkg"
-            return 0
-        fi
-    done
-
+    # Let apt resolve versioned Conflicts/Replaces. A required package must
+    # never be reported as successfully installed merely because it conflicts.
     (DEBIAN_FRONTEND=noninteractive apt-get install -y "${APT_OPTS[@]}" \
         "$pkg" < /dev/null >> "$LOG_FILE" 2>&1) &
     spinner $! "Installing ${name}..."
@@ -269,7 +255,7 @@ proot_install_pkg() {
     local name=${2:-$pkg}
 
     # Check if already installed inside the proot
-    if proot-distro login ubuntu -- dpkg -s "$pkg" &>/dev/null; then
+    if [ "$(proot-distro login ubuntu -- dpkg-query -W -f='${db:Status-Status}' "$pkg" 2>/dev/null)" = "installed" ]; then
         printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already installed)${NC}\n" "$name"
         log "SKIP (already installed in Ubuntu): $pkg"
         return 0
@@ -363,8 +349,8 @@ preflight_checks() {
 
     # Ask now rather than after a 30-minute install.
     echo -e "${CYAN}Optional: install HACS (Home Assistant Community Store)?${NC}"
-    echo -e "  ${GRAY}HACS is the add-on store for community integrations and themes.${NC}"
-    echo -e "  ${GRAY}It must be installed BEFORE any other custom integration.${NC}"
+    echo -e "  ${GRAY}HACS provides community integrations and themes.${NC}"
+    echo -e "  ${GRAY}HA 2026.11+ includes it as Marketplace; older releases need HACS.${NC}"
     echo ""
     if [ -n "$HACS_FROM_FLAG" ]; then
         INSTALL_HACS="$HACS_FROM_FLAG"
@@ -396,7 +382,7 @@ step_proot() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing proot-distro...${NC}"
     echo ""
 
-    safe_install_pkg "proot-distro" "proot-distro (Linux container manager)"
+    safe_install_pkg "proot-distro" "proot-distro (Linux container manager)" || return 1
     safe_install_pkg "proot"        "proot (user-space chroot)"
 }
 
@@ -407,12 +393,12 @@ step_ubuntu() {
     echo ""
 
     # Check if Ubuntu is already installed
-    if proot-distro list 2>/dev/null | grep -q "ubuntu.*Installed"; then
+    if proot-distro login ubuntu -- true < /dev/null &>/dev/null; then
         printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already installed)${NC}\n" "Ubuntu container"
         log "SKIP (already installed): Ubuntu proot"
     else
-        (proot-distro install ubuntu >> "$LOG_FILE" 2>&1) &
-        spinner $! "Downloading and installing Ubuntu..."
+        (proot-distro install ubuntu < /dev/null >> "$LOG_FILE" 2>&1) &
+        spinner $! "Downloading and installing Ubuntu..." || return 1
     fi
 
     # Update package lists inside Ubuntu
@@ -428,17 +414,17 @@ step_ubuntu_deps() {
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing build dependencies in Ubuntu...${NC}"
     echo ""
 
-    proot_install_pkg "python3"        "Python 3"
-    proot_install_pkg "python3-pip"    "pip"
-    proot_install_pkg "python3-venv"   "Python venv"
-    proot_install_pkg "python3-dev"    "Python dev headers"
-    proot_install_pkg "build-essential" "Build tools (gcc, make, etc.)"
-    proot_install_pkg "libffi-dev"     "libffi (foreign function interface)"
-    proot_install_pkg "libssl-dev"     "OpenSSL development headers"
-    proot_install_pkg "libjpeg-dev"    "JPEG library"
-    proot_install_pkg "zlib1g-dev"     "zlib compression library"
-    proot_install_pkg "autoconf"       "Autoconf"
-    proot_install_pkg "cargo"          "Rust/Cargo (for cryptography)"
+    proot_install_pkg "python3"        "Python 3" || return 1
+    proot_install_pkg "python3-pip"    "pip" || return 1
+    proot_install_pkg "python3-venv"   "Python venv" || return 1
+    proot_install_pkg "python3-dev"    "Python dev headers" || return 1
+    proot_install_pkg "build-essential" "Build tools (gcc, make, etc.)" || return 1
+    proot_install_pkg "libffi-dev"     "libffi (foreign function interface)" || return 1
+    proot_install_pkg "libssl-dev"     "OpenSSL development headers" || return 1
+    proot_install_pkg "libjpeg-dev"    "JPEG library" || return 1
+    proot_install_pkg "zlib1g-dev"     "zlib compression library" || return 1
+    proot_install_pkg "autoconf"       "Autoconf" || return 1
+    proot_install_pkg "cargo"          "Rust/Cargo (for cryptography)" || return 1
     proot_install_pkg "pkg-config"     "pkg-config"
 }
 
@@ -451,41 +437,72 @@ step_homeassistant() {
     echo -e "  ${YELLOW}Keep your screen on or use termux-wake-lock.${NC}"
     echo ""
 
-    # Create venv if it doesn't exist
-    if proot-distro login ubuntu -- test -d "${TERMUX_HOME}/hass-venv"; then
+    # An interrupted venv creation can leave a directory without a usable pip.
+    if proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/python" -m pip --version < /dev/null &>/dev/null; then
         printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already exists)${NC}\n" "Python virtual environment"
     else
         (proot-distro login ubuntu -- python3 -m venv "${TERMUX_HOME}/hass-venv" \
-            >> "$LOG_FILE" 2>&1) &
-        spinner $! "Creating Python virtual environment..."
+            < /dev/null >> "$LOG_FILE" 2>&1) &
+        spinner $! "Creating Python virtual environment..." || return 1
     fi
 
     # Upgrade pip inside the venv
     # NOTE: Call venv binaries directly — "source activate" fails inside proot
-    (proot-distro login ubuntu -- ${TERMUX_HOME}/hass-venv/bin/pip install --upgrade pip wheel setuptools \
-        >> "$LOG_FILE" 2>&1) &
-    spinner $! "Upgrading pip and setuptools..."
+    (proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/python" -m pip install --no-input --upgrade pip wheel setuptools \
+        < /dev/null >> "$LOG_FILE" 2>&1) &
+    spinner $! "Upgrading pip and setuptools..." || return 1
 
     # Install Home Assistant Core.
     # HA lazy-loads many components whose deps aren't pulled in by pip.
     # We explicitly install the ones needed for the core UI to function.
-    (proot-distro login ubuntu -- ${TERMUX_HOME}/hass-venv/bin/pip install \
+    (proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/python" -m pip install --no-input \
         homeassistant \
         hassil home-assistant-intents pyspeex-noise \
         numpy av mutagen pymicro-vad ha-ffmpeg PyTurboJPEG PyNaCl \
         cached-ipaddress file-read-backwards go2rtc-client async-upnp-client \
-        >> "$LOG_FILE" 2>&1) &
-    spinner $! "Installing Home Assistant Core (this takes a while)..."
+        < /dev/null >> "$LOG_FILE" 2>&1) &
+    spinner $! "Installing Home Assistant Core (this takes a while)..." || return 1
 
     # Patch ifaddr: Android 10+ blocks getifaddrs() inside proot, causing
     # PermissionError in HA's network detection. We patch the library to
     # return an empty adapter list instead of crashing. HA still works fine
     # because we explicitly set server_host in configuration.yaml.
-    local IFADDR_POSIX="${TERMUX_HOME}/hass-venv/lib/python3.*/site-packages/ifaddr/_posix.py"
-    proot-distro login ubuntu -- bash -c \
-        "sed -i 's/        raise OSError(eno, os.strerror(eno))/        return []/g' ${IFADDR_POSIX}" \
-        >> "$LOG_FILE" 2>&1
+    patch_ifaddr "${TERMUX_HOME}/hass-venv/bin/python" >> "$LOG_FILE" 2>&1 || return 1
     echo -e "  ${GREEN}✔${NC}  Patched ifaddr for Android network compatibility."
+}
+
+# Kept as one function so the upgrade launcher reapplies the same workaround
+# after pip replaces ifaddr. Only Android permission errors are suppressed.
+patch_ifaddr() {
+    proot-distro login ubuntu -- "$1" - << 'PYTHON'
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.find_spec("ifaddr")
+if spec is None or spec.origin is None:
+    raise SystemExit("ifaddr is missing; Home Assistant installation is incomplete")
+path = Path(spec.origin).with_name("_posix.py")
+source = path.read_text()
+marker = "# linux-android: tolerate Android network permission restrictions"
+if marker not in source:
+    header = "    if retval != 0:\n        eno = ctypes.get_errno()\n"
+    original = header + "        raise OSError(eno, os.strerror(eno))"
+    legacy = header + "        return []"
+    replacement = (header + "        " + marker + "\n"
+                   "        import errno\n"
+                   "        if eno in (errno.EPERM, errno.EACCES):\n"
+                   "            return []\n"
+                   "        raise OSError(eno, os.strerror(eno))")
+    if original in source:
+        source = source.replace(original, replacement, 1)
+    elif legacy in source:
+        source = source.replace(legacy, replacement, 1)
+    else:
+        raise SystemExit("ifaddr changed; cannot safely apply Android compatibility patch")
+    compile(source, str(path), "exec")
+    path.write_text(source)
+print("ifaddr Android compatibility patch is ready")
+PYTHON
 }
 
 # ============== STEP 5: INITIALIZE HA CONFIG ==============
@@ -499,21 +516,25 @@ step_ha_config() {
     # inside proot. Instead we create a minimal valid config ourselves.
     local HASS_CONFIG="${TERMUX_HOME}/hass-config"
 
-    if proot-distro login ubuntu -- test -f "${HASS_CONFIG}/configuration.yaml"; then
-        printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already exists)${NC}\n" "HA config directory"
-    else
-        proot-distro login ubuntu -- mkdir -p "${HASS_CONFIG}"
-        echo -e "  ${GREEN}✔${NC}  Created config directory."
+    # Existing YAML may contain secrets, includes, TLS or a deliberate binding.
+    # Absence of server_host is normal; never replace a user's configuration.
+    if proot-distro login ubuntu -- test -e "${HASS_CONFIG}/configuration.yaml"; then
+        printf "  ${GRAY}~${NC}  %-55s ${GRAY}(preserved)${NC}\n" "Existing configuration.yaml"
+        return 0
     fi
+    proot-distro login ubuntu -- mkdir -p "${HASS_CONFIG}" || return 1
+    proot-distro login ubuntu -- bash -c 'set -o noclobber; cat > "$1"' bash \
+        "${HASS_CONFIG}/configuration.yaml" << 'YAML' || return 1
+homeassistant:
 
-    # Ensure HA is accessible from the local network (not just localhost).
-    # NOTE: must use double quotes so ${HASS_CONFIG} expands from Termux.
-    if proot-distro login ubuntu -- grep -q "server_host" "${HASS_CONFIG}/configuration.yaml" 2>/dev/null; then
-        printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already configured)${NC}\n" "Network binding (0.0.0.0)"
-    else
-        proot-distro login ubuntu -- sh -c "printf 'homeassistant:\n\nhttp:\n  server_host: 0.0.0.0\n\nmobile_app:\n\ndefault_config:\n' > ${HASS_CONFIG}/configuration.yaml"
-        echo -e "  ${GREEN}✔${NC}  Configured HA to accept connections from your network."
-    fi
+http:
+  server_host: 0.0.0.0
+
+mobile_app:
+
+default_config:
+YAML
+    echo -e "  ${GREEN}✔${NC}  Created configuration.yaml for local-network access."
 }
 
 # ============== STEP 6: CREATE LAUNCHER SCRIPTS ==============
@@ -529,7 +550,7 @@ step_launchers() {
     local HASS_BIN="${TERMUX_HOME}/hass-venv/bin/hass"
     local HASS_CFG="${TERMUX_HOME}/hass-config"
 
-    cat > "$TERMUX_HOME/start-homeassistant.sh" << STARTEOF
+    cat > "$TERMUX_HOME/start-homeassistant.sh" << STARTEOF || return 1
 #!${TERMUX_PREFIX}/bin/bash
 echo ""
 echo "[*] Starting Home Assistant Core..."
@@ -537,6 +558,7 @@ echo ""
 
 if command -v termux-wake-lock &>/dev/null; then
     termux-wake-lock
+    trap 'termux-wake-unlock 2>/dev/null || true' EXIT
     echo "[*] Wake lock acquired."
 fi
 
@@ -556,11 +578,11 @@ echo ""
 
 proot-distro login ubuntu -- "${HASS_BIN}" -c "${HASS_CFG}"
 STARTEOF
-    chmod +x "$TERMUX_HOME/start-homeassistant.sh"
+    chmod +x "$TERMUX_HOME/start-homeassistant.sh" || return 1
     echo -e "  ${GREEN}✔ Created ~/start-homeassistant.sh${NC}"
 
     # stop-homeassistant.sh
-    cat > "$TERMUX_HOME/stop-homeassistant.sh" << STOPEOF
+    cat > "$TERMUX_HOME/stop-homeassistant.sh" << STOPEOF || return 1
 #!${TERMUX_PREFIX}/bin/bash
 echo "[*] Stopping Home Assistant..."
 
@@ -575,7 +597,7 @@ fi
 
 echo "[*] Home Assistant stopped."
 STOPEOF
-    chmod +x "$TERMUX_HOME/stop-homeassistant.sh"
+    chmod +x "$TERMUX_HOME/stop-homeassistant.sh" || return 1
     echo -e "  ${GREEN}✔ Created ~/stop-homeassistant.sh${NC}"
 
     # upgrade-homeassistant.sh
@@ -583,8 +605,12 @@ STOPEOF
     # your container's interpreter satisfies, so this upgrades you as far as
     # that Python allows and then says so. See README ("Upgrading Home
     # Assistant") for the version/Python mapping.
-    cat > "$TERMUX_HOME/upgrade-homeassistant.sh" << UPGRADEEOF
+    cat > "$TERMUX_HOME/upgrade-homeassistant.sh" << UPGRADEEOF || return 1
 #!${TERMUX_PREFIX}/bin/bash
+set -o pipefail
+
+$(declare -f patch_ifaddr)
+
 echo ""
 echo "[*] Upgrading Home Assistant Core..."
 echo ""
@@ -593,8 +619,8 @@ echo "[*] Stopping any running instance..."
 pkill -f "hass-venv/bin/hass" 2>/dev/null || pkill -f "hass -c" 2>/dev/null || true
 sleep 2
 
-BEFORE=\$(proot-distro login ubuntu -- ${HASS_BIN} --version 2>/dev/null)
-PYVER=\$(proot-distro login ubuntu -- ${TERMUX_HOME}/hass-venv/bin/python --version 2>/dev/null)
+BEFORE=\$(proot-distro login ubuntu -- "${HASS_BIN}" --version 2>/dev/null)
+PYVER=\$(proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/python" --version 2>/dev/null)
 
 echo "[*] Container Python : \${PYVER:-unknown}"
 echo "[*] Current HA       : \${BEFORE:-unknown}"
@@ -602,13 +628,21 @@ echo ""
 echo "[*] This can take 10-20 minutes. Keep the screen on."
 echo ""
 
-if command -v termux-wake-lock &>/dev/null; then termux-wake-lock; fi
+if command -v termux-wake-lock &>/dev/null; then
+    termux-wake-lock
+    trap 'termux-wake-unlock 2>/dev/null || true' EXIT
+fi
 
-proot-distro login ubuntu -- ${TERMUX_HOME}/hass-venv/bin/pip install --upgrade homeassistant
+if ! proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/python" -m pip install --no-input --upgrade homeassistant < /dev/null; then
+    echo "[!] Upgrade failed. Resolve the pip error above before restarting." >&2
+    exit 1
+fi
+if ! patch_ifaddr "${TERMUX_HOME}/hass-venv/bin/python"; then
+    echo "[!] Could not restore Android network compatibility. Check the error above." >&2
+    exit 1
+fi
 
-AFTER=\$(proot-distro login ubuntu -- ${HASS_BIN} --version 2>/dev/null)
-
-if command -v termux-wake-unlock &>/dev/null; then termux-wake-unlock; fi
+AFTER=\$(proot-distro login ubuntu -- "${HASS_BIN}" --version 2>/dev/null) || exit 1
 
 echo ""
 echo "-----------------------------------------------------"
@@ -618,27 +652,22 @@ echo "-----------------------------------------------------"
 if [ "\$BEFORE" = "\$AFTER" ]; then
     echo ""
     echo "  No change. You are already on the newest release that"
-    echo "  \${PYVER:-your Python} can run. Home Assistant 2026.3 and later"
-    echo "  need Python 3.14.2+; 2026.2.x is the last release for 3.13."
+    echo "  \${PYVER:-your Python} and your configured package index can provide."
+    echo "  Newer Home Assistant releases may require a newer Python."
     echo "  See the README section \"Upgrading Home Assistant\"."
 fi
 echo ""
 echo "[*] Start again with: bash ~/start-homeassistant.sh"
 echo ""
 UPGRADEEOF
-    chmod +x "$TERMUX_HOME/upgrade-homeassistant.sh"
+    chmod +x "$TERMUX_HOME/upgrade-homeassistant.sh" || return 1
     echo -e "  ${GREEN}✔ Created ~/upgrade-homeassistant.sh${NC}"
 }
 
 # ============== STEP 7 (OPTIONAL): HACS ==============
 #
-# HACS is the community add-on store. Two things matter, both learned the hard
-# way in issue #2:
-#   1. It must be installed before any other custom integration. If
-#      custom_components already has hand-installed integrations in it, the
-#      HACS installer can leave you with a broken setup.
-#   2. The official installer writes into the HA *config* directory, so it has
-#      to run with that directory as the working directory.
+# HACS is built in as Marketplace starting with HA 2026.11. Older installations
+# use the official installer, with the HA config directory as working directory.
 step_hacs() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing HACS...${NC}"
@@ -646,9 +675,20 @@ step_hacs() {
 
     local HASS_CONFIG="${TERMUX_HOME}/hass-config"
 
+    local ha_version
+    ha_version=$(proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/hass" --version 2>/dev/null)
+    if [[ "$ha_version" =~ ^([0-9]+)\.([0-9]+) ]] &&
+        { [ "${BASH_REMATCH[1]}" -gt 2026 ] ||
+          { [ "${BASH_REMATCH[1]}" -eq 2026 ] && [ "${BASH_REMATCH[2]}" -ge 11 ]; }; }; then
+        echo -e "  ${GREEN}✔${NC}  This Home Assistant release includes HACS as Marketplace."
+        HACS_READY="marketplace"
+        return 0
+    fi
+
     if proot-distro login ubuntu -- test -d "${HASS_CONFIG}/custom_components/hacs"; then
         printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already installed)${NC}\n" "HACS"
         log "SKIP (already installed): HACS"
+        HACS_READY="yes"
         return 0
     fi
 
@@ -660,28 +700,29 @@ step_hacs() {
     if [ -n "$existing" ]; then
         echo -e "  ${YELLOW}⚠${NC}  custom_components already contains:"
         echo "$existing" | sed 's/^/       /'
-        echo -e "  ${YELLOW}   HACS expects to be installed first. If HACS misbehaves, remove${NC}"
-        echo -e "  ${YELLOW}   those directories and re-run this script.${NC}"
+        echo -e "  ${GRAY}   Existing custom integrations will be kept.${NC}"
         log "WARNING: pre-existing custom_components: $existing"
     fi
 
-    proot_install_pkg "wget" "wget (Ubuntu)"
+    proot_install_pkg "wget" "wget (Ubuntu)" || return 1
 
-    (proot-distro login ubuntu -- sh -c \
-        "cd ${HASS_CONFIG} && wget -q -O - https://get.hacs.xyz | bash -" \
-        >> "$LOG_FILE" 2>&1) &
-    spinner $! "Downloading and installing HACS..."
+    (proot-distro login ubuntu -- bash -o pipefail -c \
+        'cd "$1" && wget --timeout=30 --tries=3 -q -O - https://get.hacs.xyz | bash -' bash "$HASS_CONFIG" \
+        < /dev/null >> "$LOG_FILE" 2>&1) &
+    spinner $! "Downloading and installing HACS..." || return 1
 
     if proot-distro login ubuntu -- test -d "${HASS_CONFIG}/custom_components/hacs"; then
         echo -e "  ${GREEN}✔${NC}  HACS installed."
         echo -e "    ${GRAY}Finish setup in the dashboard: Settings -> Devices & Services${NC}"
         echo -e "    ${GRAY}-> Add Integration -> HACS (restart HA first).${NC}"
         log "HACS installed OK"
+        HACS_READY="yes"
     else
         echo -e "  ${YELLOW}⚠${NC}  HACS install did not complete — see $LOG_FILE."
         echo -e "    ${GRAY}You can retry manually:${NC}"
         echo -e "    ${GRAY}proot-distro login ubuntu -- sh -c \"cd ${HASS_CONFIG} && wget -O - https://get.hacs.xyz | bash -\"${NC}"
         log "WARNING: HACS install incomplete"
+        return 1
     fi
 }
 
@@ -693,13 +734,13 @@ step_verify() {
 
     # Check that hass binary exists in the venv
     # NOTE: Call venv binaries directly — "source activate" fails inside proot
-    if proot-distro login ubuntu -- ${TERMUX_HOME}/hass-venv/bin/hass --version &>/dev/null; then
+    if proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/hass" --version < /dev/null &>/dev/null; then
         echo -e "  ${GREEN}✔${NC}  Home Assistant binary found."
         log "Verification OK: hass binary found"
 
         local HA_VERSION PY_VERSION
-        HA_VERSION=$(proot-distro login ubuntu -- ${TERMUX_HOME}/hass-venv/bin/hass --version 2>/dev/null)
-        PY_VERSION=$(proot-distro login ubuntu -- ${TERMUX_HOME}/hass-venv/bin/python --version 2>/dev/null | awk '{print $2}')
+        HA_VERSION=$(proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/hass" --version 2>/dev/null)
+        PY_VERSION=$(proot-distro login ubuntu -- "${TERMUX_HOME}/hass-venv/bin/python" --version 2>/dev/null | awk '{print $2}')
 
         if [ -n "$HA_VERSION" ]; then
             echo -e "  ${GREEN}✔${NC}  Home Assistant: ${WHITE}${HA_VERSION}${NC}"
@@ -710,37 +751,27 @@ step_verify() {
             log "Container Python: $PY_VERSION"
         fi
 
-        # pip installs the newest release whose requires-python your
-        # interpreter satisfies, and stops there. That is why a fresh install
-        # can land on an older HA than the one on the website — it is not a
-        # broken install. (issue #2)
-        case "$PY_VERSION" in
-            3.13.*)
-                echo ""
-                echo -e "  ${YELLOW}⚠${NC}  Python 3.13 caps you at Home Assistant 2026.2.x."
-                echo -e "     ${GRAY}2026.3 and later need Python 3.14.2+. This is expected,${NC}"
-                echo -e "     ${GRAY}not a failed install. See the README section${NC}"
-                echo -e "     ${GRAY}\"Upgrading Home Assistant\" for the Python 3.14 route.${NC}"
-                ;;
-            3.1[0-2].*)
-                echo ""
-                echo -e "  ${YELLOW}⚠${NC}  Python ${PY_VERSION} caps you at Home Assistant 2025.1.x."
-                echo -e "     ${GRAY}HA 2025.2+ requires 3.13, 2025.6+ requires 3.13.2,${NC}"
-                echo -e "     ${GRAY}2026.3+ requires 3.14.2. See the README.${NC}"
-                ;;
-        esac
+        # pip resolves against this interpreter and the configured package index.
+        # Avoid a hardcoded release ceiling that becomes wrong as HA evolves.
+        echo -e "  ${GRAY}pip selected a release compatible with Python ${PY_VERSION:-unknown}."
+        echo -e "  Newer Home Assistant releases may need a newer Python; see the README.${NC}"
     else
         echo -e "  ${RED}✘${NC}  Home Assistant binary not found."
         echo -e "    ${WHITE}Check $LOG_FILE for pip install errors.${NC}"
         log "FAILED: hass binary not found after install"
+        return 1
     fi
 
     # Check launcher scripts exist
     if [ -x "$TERMUX_HOME/start-homeassistant.sh" ]; then
         echo -e "  ${GREEN}✔${NC}  ~/start-homeassistant.sh is ready."
+    else
+        return 1
     fi
     if [ -x "$TERMUX_HOME/stop-homeassistant.sh" ]; then
         echo -e "  ${GREEN}✔${NC}  ~/stop-homeassistant.sh is ready."
+    else
+        return 1
     fi
 }
 
@@ -769,7 +800,10 @@ COMPLETE
     echo -e "  ${CYAN}First launch takes 5–10 minutes to initialize.${NC}"
     echo -e "  ${CYAN}You'll create your admin account in the browser.${NC}"
     echo ""
-    if [ "$INSTALL_HACS" == "yes" ]; then
+    if [ "$HACS_READY" == "marketplace" ]; then
+        echo -e "  ${WHITE}HACS is included as Marketplace in this Home Assistant release.${NC}"
+        echo ""
+    elif [ "$HACS_READY" == "yes" ]; then
         echo -e "${YELLOW}  ─────────────────────────────────────────────────${NC}"
         echo -e "  ${WHITE}FINISHING HACS SETUP${NC}"
         echo -e "${YELLOW}  ─────────────────────────────────────────────────${NC}"
@@ -780,6 +814,9 @@ COMPLETE
         echo -e "    4. Tick all the acknowledgements, then authorize with GitHub"
         echo ""
         echo -e "    ${GRAY}Docs: https://www.hacs.xyz/docs/use/configuration/basic/${NC}"
+        echo ""
+    elif [ "$INSTALL_HACS" == "yes" ]; then
+        echo -e "  ${YELLOW}HACS was not installed. Check $LOG_FILE and rerun with --hacs.${NC}"
         echo ""
     fi
     echo -e "${YELLOW}  ─────────────────────────────────────────────────${NC}"
@@ -794,11 +831,10 @@ COMPLETE
     echo -e "    ${GRAY}mDNS auto-discovery is disabled on Android — you must add by IP.${NC}"
     echo ""
     echo -e "  ${CYAN}Tuya / Smart Life (smart lights/plugs):${NC}"
-    echo -e "    1. Create a Tuya IoT developer account at:"
-    echo -e "       ${WHITE}https://iot.tuya.com${NC}"
-    echo -e "    2. Create a Cloud Project and link your Smart Life app"
-    echo -e "    3. In HA: Settings → Devices → Add Integration → \"Tuya\""
-    echo -e "    4. Enter your Access ID, Access Secret, and country code"
+    echo -e "    1. Add your devices in the Tuya Smart or Smart Life app."
+    echo -e "    2. In that app: Me → Settings → Account and Security → User Code."
+    echo -e "    3. In HA: Settings → Devices & Services → Add Integration → Tuya."
+    echo -e "    4. Enter the User Code and scan the displayed QR code with the app."
     echo -e "    ${GRAY}Tuya uses cloud API — works even without local network access.${NC}"
     echo ""
     echo -e "${YELLOW}  ─────────────────────────────────────────────────${NC}"
@@ -811,7 +847,8 @@ COMPLETE
     echo -e "    ${GREEN}nohup bash ~/start-homeassistant.sh > ~/hass.log 2>&1 &${NC}"
     echo ""
     echo -e "  ${GRAY}The start script already acquires a wake lock, but running it"
-    echo -e "  with nohup ensures it survives Termux being backgrounded.${NC}"
+    echo -e "  with nohup detaches it from this terminal. Android can still kill Termux;"
+    echo -e "  disable battery optimization and keep the phone powered.${NC}"
     echo ""
     echo -e "  ${GRAY}Full install log: $LOG_FILE${NC}"
     echo ""
@@ -832,30 +869,30 @@ main() {
         termux-wake-lock
         log "Wake lock acquired."
         # Release it however we exit: success, an early `exit 1`, or Ctrl+C.
-        trap 'termux-wake-unlock 2>/dev/null' EXIT
-        trap 'echo; echo "Interrupted. Re-run the script to continue — finished steps are skipped."; exit 130' INT TERM
+        trap 'termux-wake-unlock 2>/dev/null || true' EXIT
     else
         echo -e "${YELLOW}  [!] termux-wake-lock unavailable — keep your screen on during install.${NC}"
         echo ""
     fi
+    trap 'echo; echo "Interrupted. Re-run the script to continue — finished steps are skipped."; exit 130' INT
+    trap 'echo; echo "Terminated. Re-run the script to continue — finished steps are skipped."; exit 143' TERM
 
     show_banner
-    preflight_checks
+    preflight_checks || return 1
 
-    step_proot
-    step_ubuntu
-    step_ubuntu_deps
-    step_homeassistant
-    step_ha_config
-    step_launchers
-    [ "$INSTALL_HACS" == "yes" ] && step_hacs
-    step_verify
-    show_completion
-
-    if command -v termux-wake-unlock &>/dev/null; then
-        termux-wake-unlock
-        log "Wake lock released."
+    local step
+    for step in step_proot step_ubuntu step_ubuntu_deps step_homeassistant step_ha_config step_launchers; do
+        if ! "$step"; then
+            echo -e "${RED}Setup stopped at $step. Check $LOG_FILE, fix the error and rerun.${NC}" >&2
+            log "FAILED: required step $step"
+            return 1
+        fi
+    done
+    if [ "$INSTALL_HACS" == "yes" ] && ! step_hacs; then
+        echo -e "${YELLOW}HACS could not be installed; Home Assistant verification will continue.${NC}"
     fi
+    step_verify || return 1
+    show_completion
 }
 
 parse_args "$@"

@@ -5,7 +5,8 @@ so the most valuable contributions are usually reports from hardware I don't hav
 
 ## Reporting a bug
 
-Open an issue using the **Bug report** template and attach `~/termux-setup.log`.
+Open an issue using the **Bug report** template and attach `~/termux-setup.log`
+for the desktop or `~/homeassistant-setup.log` for Home Assistant.
 The log records the result of every package install, so the last few lines almost
 always name the exact step that failed.
 
@@ -15,14 +16,18 @@ device-specific breakage lives.
 
 ## Making a change
 
-There is no build system and no test suite. Before opening a PR:
+There is no build system. Before opening a PR:
 
 1. `bash -n termux-linux-setup.sh && bash -n setup-homeassistant.sh` — a syntax
    error here strands someone half-way through a 30-minute install.
 2. `shellcheck --severity=warning --shell=bash *.sh` — same check CI runs.
    CI also runs `--help` and a few bad flags through both scripts, so keep
    `parse_args` free of anything Termux-specific.
-3. Run the changed script end to end on a real device, and say which device and
+3. `python3 tests/test_installers.py` — offline regression tests use temporary
+   directories and mocked Android/package commands. They generate and exercise
+   all four desktop launchers and cover Home Assistant configuration preservation
+   and required failure paths. Set `BASH` to the Bash executable on Windows.
+4. Run the changed script end to end on a real device, and say which device and
    Android version you tested on in the PR description.
 
 ## Conventions
@@ -45,6 +50,11 @@ There is no build system and no test suite. Before opening a PR:
   Every new choice also needs a flag, so `-y` installs stay fully unattended.
 - **Redirect `< /dev/null` on anything that might prompt** (apt, pkg) for the
   same reason.
+- **Quote generated-script heredoc delimiters.** Backticks and `$()` in even a
+  comment execute during generation if the delimiter is unquoted. Write required
+  configuration separately with `printf '%q'` and keep the script body literal.
+- **Check required step failures explicitly.** Optional applications may fail
+  with a warning; missing display/session components must not report success.
 - **Colors:** GREEN success, RED error, YELLOW warning, CYAN info, GRAY skipped.
 
 ## Adding or changing a package
