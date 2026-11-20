@@ -5,7 +5,8 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before filing: the install log at `~/termux-setup.log` almost always names the
+        Before filing: the desktop log at `~/termux-setup.log` (or Home Assistant log
+        at `~/homeassistant-setup.log`) almost always names the
         exact package or step that failed. Please attach it — it turns guesswork into a fix.
 
   - type: dropdown
@@ -66,7 +67,7 @@ body:
     id: log
     attributes:
       label: Install log
-      description: Attach `~/termux-setup.log`, or paste the last ~50 lines.
+      description: Attach `~/termux-setup.log` for desktop or `~/homeassistant-setup.log` for HA, or paste the last ~50 lines. Remove private details first.
       render: shell
 
   - type: checkboxes
