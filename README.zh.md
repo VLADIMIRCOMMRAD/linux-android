@@ -6,6 +6,8 @@
 
 Home Assistant 配置和虚拟环境位于 Termux 的 `$HOME/hass-config` 和 `$HOME/hass-venv`；Ubuntu 内的 `~` 通常是 `/root`，不是同一路径。重新安装会保留已有配置。桌面日志为 `~/termux-setup.log`，HA 日志为 `~/homeassistant-setup.log`。
 
+**LXQt 要求选择窗口管理器且只有 “Other”：** 旧脚本未安装窗口管理器。本分支会安装 Openbox，并在没有自定义选择时设为默认值。重新运行最新版脚本（`--de lxqt --no-wine -y`）后停止并重启桌面即可修复；已有自定义窗口管理器设置会保留。
+
 **[English](README.md)**
 
 [![listed on unshittify.dev](https://unshittify.dev/badge.svg)](https://unshittify.dev/p/linux-android/)

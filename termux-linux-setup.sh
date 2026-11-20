@@ -681,6 +681,9 @@ step_desktop() {
             ;;
         2)
             safe_install_pkg "lxqt"       "LXQt Desktop"
+            # The LXQt metapackage includes obconf-qt, but no window manager.
+            # Without one a fresh X11 session stops at an empty WM picker.
+            safe_install_pkg "openbox"    "Openbox Window Manager"
             safe_install_pkg "qterminal"  "QTerminal"
             safe_install_pkg "pcmanfm-qt" "PCManFM-Qt File Manager" optional
             safe_install_pkg "featherpad" "FeatherPad Text Editor" optional
@@ -833,6 +836,56 @@ step_wine() {
     fi
 }
 
+# LXQt needs an X11 window manager selected before it can start its panel and
+# desktop. Keep an existing custom selection and all unrelated session settings.
+configure_lxqt_window_manager() {
+    local config_dir="${XDG_CONFIG_HOME:-$TERMUX_HOME/.config}/lxqt"
+    local config_file="$config_dir/session.conf"
+    local config_tmp
+
+    mkdir -p "$config_dir" || return 1
+    if [ ! -e "$config_file" ]; then
+        printf '[General]\nwindow_manager=openbox\n' > "$config_file" || return 1
+    else
+        if awk '
+            /^[[:space:]]*\[/ { general = ($0 ~ /^[[:space:]]*\[General\][[:space:]]*$/) }
+            general && /^[[:space:]]*window_manager[[:space:]]*=/ {
+                value = $0
+                sub(/^[^=]*=[[:space:]]*/, "", value)
+                sub(/[[:space:]]*$/, "", value)
+                if (value != "" && value != "\"\"") configured = 1
+            }
+            END { exit !configured }
+        ' "$config_file"; then
+            log "LXQt: keeping the configured window manager"
+            return 0
+        fi
+
+        config_tmp=$(mktemp "$config_dir/.session.conf.XXXXXX") || return 1
+        if ! awk '
+            /^[[:space:]]*\[/ {
+                general = ($0 ~ /^[[:space:]]*\[General\][[:space:]]*$/)
+                if (general) {
+                    print
+                    print "window_manager=openbox"
+                    added = 1
+                    next
+                }
+            }
+            general && /^[[:space:]]*window_manager[[:space:]]*=/ { next }
+            { print }
+            END {
+                if (!added) print "\n[General]\nwindow_manager=openbox"
+            }
+        ' "$config_file" > "$config_tmp"; then
+            rm -f "$config_tmp"
+            return 1
+        fi
+        mv "$config_tmp" "$config_file" || return 1
+    fi
+    log "LXQt: selected Openbox as the default X11 window manager"
+}
+
 # ============== STEP 10: LAUNCHER SCRIPTS ==============
 step_launchers() {
     update_progress
@@ -840,6 +893,10 @@ step_launchers() {
     echo ""
 
     mkdir -p ~/.config
+
+    if [ "$DE_CHOICE" = "2" ]; then
+        configure_lxqt_window_manager || return 1
+    fi
 
     XDG_INJECT="export XDG_DATA_DIRS=${TERMUX_PREFIX}/share:\${XDG_DATA_DIRS:-}\nexport XDG_CONFIG_DIRS=${TERMUX_PREFIX}/etc/xdg:\${XDG_CONFIG_DIRS:-}\nexport XDG_RUNTIME_DIR=\${TMPDIR:-${TERMUX_PREFIX}/tmp}"
 
@@ -1178,7 +1235,7 @@ main() {
 
     [ "$INSTALL_WINE" == "yes" ] && step_wine
 
-    step_launchers
+    step_launchers || return 1
     step_shortcuts
     show_completion
 

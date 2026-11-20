@@ -6,6 +6,7 @@ This is the maintained fork at [VLADIMIRCOMMRAD/linux-android](https://github.co
 
 - Fix the launcher-generation hang reported in upstream [#10](https://github.com/mayukh4/linux-android/issues/10), related to the Step 9 investigation in [#7](https://github.com/mayukh4/linux-android/issues/7). Creating launchers no longer runs PulseAudio or Termux-X11 accidentally.
 - Generate a valid KDE startup command and check required commands before starting a desktop.
+- Install Openbox with LXQt and set it as the default window manager when no custom selection exists.
 - Preserve existing Home Assistant configuration when rerunning setup and report required installation failures.
 - Exercise generated launchers and failure paths with automated regression tests.
 
@@ -92,6 +93,8 @@ The Google Play build is a separate experimental branch with different behavior;
 | 4 | **KDE Plasma** | Powerful phones only — Windows 11 style | High |
 
 If you're unsure, go with **XFCE4**.
+
+LXQt uses **Openbox** for X11 window management. The installer configures it on first setup and preserves an existing custom window-manager choice.
 
 ---
 
@@ -477,6 +480,9 @@ Check `~/termux-setup.log`. The script logs every package install result. The la
 
 **Desktop doesn't appear after running start-linux.sh**
 Open the Termux-X11 app manually — the desktop renders inside that app, not in the Termux terminal itself.
+
+**LXQt shows “Please select your default Window Manager” with only “Other”**
+Older scripts installed LXQt without a window manager. Rerun the current script with `--de lxqt --no-wine -y` to install Openbox and fill in an unset default. Then restart with `bash ~/stop-linux.sh` followed by `bash ~/start-linux.sh`. For a manual repair, run `pkg install openbox` in Termux and select `openbox` in the dialog. A nonempty custom selection in `~/.config/lxqt/session.conf` is preserved.
 
 **Black screen in Termux-X11**
 Run `stop-linux.sh` then `start-linux.sh` again. KDE Plasma can take 20–30 seconds longer than other DEs on first boot.
