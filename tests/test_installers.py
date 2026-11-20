@@ -255,6 +255,55 @@ step_launchers
 ''')
         self.assertEqual(config.read_bytes(), original)
 
+    def test_lxqt_disables_only_its_optional_power_manager(self):
+        for config_home in (self.home / ".config", self.root / "custom-config"):
+            with self.subTest(config_home=config_home.name):
+                self.env["XDG_CONFIG_HOME"] = config_home.as_posix()
+                autostart = config_home / "autostart"
+                autostart.mkdir(parents=True, exist_ok=True)
+                unrelated = autostart / "personal-app.desktop"
+                original = b"[Desktop Entry]\nType=Application\nExec=my-personal-app\n"
+                unrelated.write_bytes(original)
+                power_manager = autostart / "lxqt-powermanagement.desktop"
+                self.env["TEST_DE"] = "1"
+                generate = r'''
+source "$TEST_ROOT/termux-linux-setup.sh"
+update_progress() { :; }
+DE_CHOICE=$TEST_DE
+GPU_DRIVER=swrast
+step_launchers
+'''
+                self.shell(generate)
+                self.assertFalse(power_manager.exists(), "Non-LXQt setup changed power management")
+                self.env["TEST_DE"] = "2"
+                self.shell(generate)
+                first = power_manager.read_bytes()
+                parsed = configparser.ConfigParser()
+                parsed.read_string(first.decode("utf-8"))
+                desktop = parsed["Desktop Entry"]
+                self.assertEqual(desktop["OnlyShowIn"], "LXQt;")
+                self.assertEqual(desktop["X-LXQt-Module"], "true")
+                self.assertEqual(desktop["X-LXQt-Autostart-disabled"], "true")
+                self.assertEqual(desktop["Exec"], "lxqt-powermanagement")
+                self.shell(generate)
+                self.assertEqual(power_manager.read_bytes(), first)
+                self.assertEqual(unrelated.read_bytes(), original)
+
+    def test_lxqt_preserves_user_power_manager_override(self):
+        power_manager = self.home / ".config/autostart/lxqt-powermanagement.desktop"
+        power_manager.parent.mkdir(parents=True)
+        original = (b"# Explicit user choice\n[Desktop Entry]\nType=Application\n"
+                    b"Exec=custom-power-manager\nX-LXQt-Autostart-disabled=false\n")
+        power_manager.write_bytes(original)
+        self.shell(r'''
+source "$TEST_ROOT/termux-linux-setup.sh"
+update_progress() { :; }
+DE_CHOICE=2
+GPU_DRIVER=swrast
+step_launchers
+''')
+        self.assertEqual(power_manager.read_bytes(), original)
+
     def test_homeassistant_preserves_existing_configuration(self):
         config_dir = self.home / "hass-config"
         config_dir.mkdir()
