@@ -5,6 +5,7 @@ No packages, Android services, or real user configuration are touched. Run with
 python3 tests/test_installers.py; set BASH to a Bash executable if it is not on PATH.
 """
 
+import configparser
 import os
 from pathlib import Path
 import shutil
@@ -31,7 +32,8 @@ class InstallerTests(unittest.TestCase):
         self.env = os.environ.copy()
         # These overrides affect only child shells inside this disposable directory.
         self.env.update(HOME=self.home.as_posix(), PREFIX=self.prefix.as_posix(),
-                        TMPDIR=(self.prefix / "tmp").as_posix())
+                        TMPDIR=(self.prefix / "tmp").as_posix(),
+                        XDG_CONFIG_HOME=(self.home / ".config").as_posix())
         self.env["TEST_ROOT"] = self.root.as_posix()
         self.env["TEST_REPO"] = REPO.as_posix()
         for name in ("termux-linux-setup.sh", "setup-homeassistant.sh"):
@@ -192,6 +194,66 @@ source "$HOME/.config/linux-gpu.sh"
 printf 'GPU:%s ICD:%s\n' "$GALLIUM_DRIVER" "$VK_ICD_FILENAMES"
 ''')
         self.assertIn(f"GPU:zink ICD:{icd.as_posix()}", present)
+
+    def test_lxqt_installs_a_required_window_manager(self):
+        output = self.shell(r'''
+source "$TEST_ROOT/termux-linux-setup.sh"
+update_progress() { :; }
+safe_install_pkg() { printf 'PACKAGE:%s:%s\n' "$1" "${3:-required}"; }
+DE_CHOICE=2
+step_desktop
+''')
+        self.assertIn("PACKAGE:openbox:required\n", output)
+
+    def test_lxqt_initializes_missing_window_manager_idempotently(self):
+        config = self.home / ".config/lxqt/session.conf"
+        config.parent.mkdir(parents=True)
+        for original in (
+            None,
+            "[General]\nwindow_manager= \t\nleave_confirmation=false\n",
+            '[General]\nwindow_manager=""\nleave_confirmation=false\n',
+            "[General]\nleave_confirmation=false\n",
+            "[Other]\nwindow_manager=custom-other-section\n",
+        ):
+            with self.subTest(existing=original):
+                if original is None:
+                    config.unlink(missing_ok=True)
+                else:
+                    config.write_text(original, encoding="utf-8")
+                generate = r'''
+source "$TEST_ROOT/termux-linux-setup.sh"
+update_progress() { :; }
+DE_CHOICE=2
+DE_NAME=LXQt
+GPU_DRIVER=swrast
+step_launchers
+'''
+                self.shell(generate)
+                first = config.read_bytes()
+                parsed = configparser.ConfigParser()
+                parsed.read_string(first.decode("utf-8"))
+                self.assertEqual(parsed["General"]["window_manager"], "openbox")
+                if original and "leave_confirmation" in original:
+                    self.assertEqual(parsed["General"]["leave_confirmation"], "false")
+                if original and "[Other]" in original:
+                    self.assertEqual(parsed["Other"]["window_manager"], "custom-other-section")
+                self.shell(generate)
+                self.assertEqual(config.read_bytes(), first, "Rerun changed the chosen window manager")
+
+    def test_lxqt_preserves_custom_window_manager_configuration(self):
+        config = self.home / ".config/lxqt/session.conf"
+        config.parent.mkdir(parents=True)
+        original = b"# Personal settings\n[General]\nwindow_manager=kwin_x11\nleave_confirmation=false\n[Other]\nvalue=keep\n"
+        config.write_bytes(original)
+        self.shell(r'''
+source "$TEST_ROOT/termux-linux-setup.sh"
+update_progress() { :; }
+DE_CHOICE=2
+DE_NAME=LXQt
+GPU_DRIVER=swrast
+step_launchers
+''')
+        self.assertEqual(config.read_bytes(), original)
 
     def test_homeassistant_preserves_existing_configuration(self):
         config_dir = self.home / "hass-config"
