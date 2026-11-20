@@ -886,6 +886,33 @@ configure_lxqt_window_manager() {
     log "LXQt: selected Openbox as the default X11 window manager"
 }
 
+# Android manages the phone's power state. The optional LXQt power daemon can
+# repeatedly crash on some Termux devices, so leave it disabled by default.
+# A user-owned override is an explicit choice and must survive a setup rerun.
+configure_lxqt_power_management() {
+    local autostart_dir="${XDG_CONFIG_HOME:-$TERMUX_HOME/.config}/autostart"
+    local power_entry="$autostart_dir/lxqt-powermanagement.desktop"
+
+    if [ -e "$power_entry" ] || [ -L "$power_entry" ]; then
+        log "LXQt: keeping the existing Power Management autostart override"
+        return 0
+    fi
+    mkdir -p "$autostart_dir" || return 1
+    cat > "$power_entry" << 'POWEREND' || return 1
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Power Management
+TryExec=lxqt-powermanagement
+Exec=lxqt-powermanagement
+OnlyShowIn=LXQt;
+X-LXQt-Need-Tray=true
+X-LXQt-Module=true
+X-LXQt-Autostart-disabled=true
+POWEREND
+    log "LXQt: disabled optional Power Management autostart for Android"
+}
+
 # ============== STEP 10: LAUNCHER SCRIPTS ==============
 step_launchers() {
     update_progress
@@ -896,6 +923,7 @@ step_launchers() {
 
     if [ "$DE_CHOICE" = "2" ]; then
         configure_lxqt_window_manager || return 1
+        configure_lxqt_power_management || return 1
     fi
 
     XDG_INJECT="export XDG_DATA_DIRS=${TERMUX_PREFIX}/share:\${XDG_DATA_DIRS:-}\nexport XDG_CONFIG_DIRS=${TERMUX_PREFIX}/etc/xdg:\${XDG_CONFIG_DIRS:-}\nexport XDG_RUNTIME_DIR=\${TMPDIR:-${TERMUX_PREFIX}/tmp}"
