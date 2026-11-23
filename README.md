@@ -1,4 +1,4 @@
-# Linux on Android — Repurpose Your Old Phone
+في # Linux on Android — Repurpose Your Old Phone
 
 This is the maintained fork at [VLADIMIRCOMMRAD/linux-android](https://github.com/VLADIMIRCOMMRAD/linux-android), based on [mayukh4/linux-android](https://github.com/mayukh4/linux-android). The original project, license and video credits are retained. Install commands below download this fork's fixes.
 
@@ -11,7 +11,6 @@ This is the maintained fork at [VLADIMIRCOMMRAD/linux-android](https://github.co
 - Preserve existing Home Assistant configuration when rerunning setup and report required installation failures.
 - Exercise generated launchers and failure paths with automated regression tests.
 
-The ADB/Bluetooth proposal in upstream [#11](https://github.com/mayukh4/linux-android/issues/11) is a feature request, not an implemented capability of this fork. Installing ADB alone does not expose Android Bluetooth or USB devices to Home Assistant.
 
 [![shellcheck](https://github.com/VLADIMIRCOMMRAD/linux-android/actions/workflows/shellcheck.yml/badge.svg)](https://github.com/VLADIMIRCOMMRAD/linux-android/actions/workflows/shellcheck.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -149,6 +148,7 @@ curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/
 | `--de xfce\|lxqt\|mate\|kde` | Desktop to install (default `xfce`) |
 | `--antigravity` / `--no-antigravity` | Google Antigravity IDE via Ubuntu proot (default: yes) |
 | `--wine` / `--no-wine` | Windows app support (default: no) |
+| `--auto-mirror` / `--no-auto-mirror` | Benchmark regional Termux mirrors and pick the fastest (default: auto when unset) |
 | `-y`, `--yes` | Don't ask anything |
 | `-h`, `--help` | Show all options |
 
@@ -668,14 +668,6 @@ All hardcoded `/data/data/com.termux/...` paths have been replaced with `$PREFIX
 PRs and issues are welcome. If a package name has changed, a DE has a better startup command, or you've found a new conflict to handle, open an issue with your device model and Android version. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 **Tested it on your device?** Even a one-line "works on Pixel 6 / Android 15 / XFCE4" report helps the next person — open an issue or comment on an existing one.
-
----
-
-## Read this in other languages
-
-If you would prefer to read this in Chinese, the full translation is here: **[中文文档 / Chinese documentation](README.zh.md)**.
-
-Translations of the README into other languages are welcome — open a PR with a `README.<lang>.md` file and I will link it here.
 
 ---
 

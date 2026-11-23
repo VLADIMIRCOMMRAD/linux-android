@@ -48,6 +48,8 @@ ANTIGRAVITY_INSTALL_DIR="/opt/antigravity-ide"
 DE_FROM_FLAG=""
 ANTIGRAVITY_FROM_FLAG=""
 WINE_FROM_FLAG=""
+AUTO_MIRROR="auto"
+RANKED_MIRRORS=()
 ASSUME_YES="no"
 
 LOG_FILE="$TERMUX_HOME/termux-setup.log"
@@ -83,6 +85,8 @@ Options:
   --no-antigravity  Skip Google Antigravity IDE
   --wine            Also install Windows app support (Hangover Wine + Box64)
   --no-wine         Skip Wine (default)
+  --auto-mirror     Benchmark regional Termux mirrors and pick the fastest
+  --no-auto-mirror  Keep current Termux mirror configuration untouched
   -y, --yes         Don't ask anything; use the flags above or the defaults
   -h, --help        Show this help
 
@@ -133,6 +137,8 @@ parse_args() {
             --no-antigravity) ANTIGRAVITY_FROM_FLAG="no" ;;
             --wine)           WINE_FROM_FLAG="yes" ;;
             --no-wine)        WINE_FROM_FLAG="no" ;;
+            --auto-mirror)    AUTO_MIRROR="force" ;;
+            --no-auto-mirror) AUTO_MIRROR="no" ;;
             -y|--yes)         ASSUME_YES="yes" ;;
             -h|--help)        usage; exit 0 ;;
             *)
@@ -643,23 +649,193 @@ setup_environment() {
     sleep 1
 }
 
+# ============== AUTO FASTEST MIRROR ==============
+#
+# When no mirror has been selected yet (missing chosen_mirrors), Termux rotates
+# across worldwide mirrors and can land on a distant/slow mirror (e.g. China
+# from Europe/Africa). Probing official Termux regional mirror definitions in
+# parallel selects the lowest-latency mirror for the device's actual network
+# location — without relying on third-party GeoIP services.
+
+mirror_field() {
+    sed -n "s/^[[:space:]]*${2}=[\"']*\([^\"']*\)[\"']*[[:space:]]*$/\1/p" "$1" 2>/dev/null | head -n 1
+}
+
+apply_mirror_file() {
+    local mirror_file=$1
+    local latency=${2:-}
+    local mirrors_dir="${TERMUX_PREFIX}/etc/termux/mirrors"
+    local chosen_link="${TERMUX_PREFIX}/etc/termux/chosen_mirrors"
+    local best_main best_x11 best_root rel_name
+
+    best_main=$(mirror_field "$mirror_file" "MAIN")
+    best_x11=$(mirror_field "$mirror_file" "X11")
+    best_root=$(mirror_field "$mirror_file" "ROOT")
+    [ -n "$best_main" ] || return 1
+
+    mkdir -p "${TERMUX_PREFIX}/etc/termux" "${TERMUX_PREFIX}/etc/apt"
+    ln -sfn "$mirror_file" "$chosen_link"
+    printf 'deb %s stable main\n' "$best_main" > "${TERMUX_PREFIX}/etc/apt/sources.list"
+
+    if [ -n "$best_x11" ] && [ -f "${TERMUX_PREFIX}/etc/apt/sources.list.d/x11.list" ]; then
+        printf 'deb %s x11 main\n' "$best_x11" > "${TERMUX_PREFIX}/etc/apt/sources.list.d/x11.list"
+    fi
+    if [ -n "$best_root" ] && [ -f "${TERMUX_PREFIX}/etc/apt/sources.list.d/root.list" ]; then
+        printf 'deb %s root stable\n' "$best_root" > "${TERMUX_PREFIX}/etc/apt/sources.list.d/root.list"
+    fi
+
+    rel_name=${mirror_file#"${mirrors_dir}/"}
+    if [ -n "$latency" ]; then
+        echo -e "  ${GREEN}✔${NC}  Closest mirror selected: ${WHITE}${rel_name}${NC} ${GRAY}(${latency}s)${NC}"
+        log "MIRROR: selected ${rel_name} (${best_main}) in ${latency}s"
+    else
+        echo -e "  ${GREEN}✔${NC}  Mirror selected: ${WHITE}${rel_name}${NC}"
+        log "MIRROR: selected ${rel_name} (${best_main})"
+    fi
+}
+
+probe_fastest_mirrors() {
+    RANKED_MIRRORS=()
+    local mirrors_dir="${TERMUX_PREFIX}/etc/termux/mirrors"
+    [ -d "$mirrors_dir" ] || return 1
+    command -v curl >/dev/null 2>&1 || return 1
+
+    local candidates=()
+    local region f weight main_url
+    [ -f "${mirrors_dir}/default" ] && candidates+=("${mirrors_dir}/default")
+
+    for region in "${mirrors_dir}"/*/; do
+        [ -d "$region" ] || continue
+        local ranked=""
+        for f in "${region}"*; do
+            [ -f "$f" ] || continue
+            main_url=$(mirror_field "$f" "MAIN")
+            [ -n "$main_url" ] || continue
+            weight=$(mirror_field "$f" "WEIGHT")
+            weight=${weight:-1}
+            ranked+="${weight}|${f}"$'\n'
+        done
+        if [ -n "$ranked" ]; then
+            while IFS= read -r f; do
+                [ -n "$f" ] && candidates+=("$f")
+            done < <(printf '%s' "$ranked" | sort -t'|' -k1,1nr | head -n 2 | cut -d'|' -f2)
+        fi
+    done
+
+    [ "${#candidates[@]}" -gt 0 ] || return 1
+
+    echo -e "  ${CYAN}⠿${NC}  Benchmarking regional Termux mirrors (${#candidates[@]} probes)..."
+    local tmp_dir
+    tmp_dir=$(mktemp -d "${TMPDIR:-$TERMUX_PREFIX/tmp}/termux-mirror.XXXXXX") || return 1
+
+    local idx=0 pids=()
+    for f in "${candidates[@]}"; do
+        main_url=$(mirror_field "$f" "MAIN")
+        [ -n "$main_url" ] || continue
+        idx=$((idx + 1))
+        (
+            local t
+            t=$(curl -fsS -o /dev/null --connect-timeout 3 --max-time 5 \
+                -w '%{time_total}' "${main_url}/dists/stable/InRelease" 2>/dev/null) || exit 1
+            [ -n "$t" ] && printf '%s|%s\n' "$t" "$f" > "${tmp_dir}/res_${idx}"
+        ) &
+        pids+=($!)
+    done
+
+    local p
+    for p in "${pids[@]}"; do
+        wait "$p" 2>/dev/null || true
+    done
+
+    local entry
+    while IFS= read -r entry; do
+        [ -n "$entry" ] && RANKED_MIRRORS+=("$entry")
+    done < <(awk -F'|' 'NF >= 2 && ($1 + 0) > 0 { printf "%012.6f|%s|%s\n", ($1 + 0), $1, $2 }' \
+        "${tmp_dir}"/res_* 2>/dev/null | sort | cut -d'|' -f2-)
+    rm -rf "$tmp_dir"
+
+    [ "${#RANKED_MIRRORS[@]}" -gt 0 ]
+}
+
+select_fastest_mirror() {
+    [ "$AUTO_MIRROR" = "no" ] && return 0
+
+    local chosen_link="${TERMUX_PREFIX}/etc/termux/chosen_mirrors"
+    if [ "$AUTO_MIRROR" != "force" ] && { [ -e "$chosen_link" ] || [ -L "$chosen_link" ]; }; then
+        log "SKIP (mirror already selected via chosen_mirrors)"
+        return 0
+    fi
+
+    if ! probe_fastest_mirrors; then
+        echo -e "  ${YELLOW}⚠${NC}  Mirror probe timed out — keeping current Termux mirror."
+        log "WARNING: auto-mirror probe found no reachable mirror"
+        return 0
+    fi
+
+    local first_entry="${RANKED_MIRRORS[0]}"
+    apply_mirror_file "${first_entry#*|}" "${first_entry%%|*}"
+}
+
 # ============== STEP 1: UPDATE SYSTEM ==============
 step_update() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Updating system packages...${NC}"
     echo ""
 
+    select_fastest_mirror
+
+    local update_ok="no"
     (DEBIAN_FRONTEND=noninteractive apt-get update -y "${APT_OPTS[@]}" \
         < /dev/null >> "$LOG_FILE" 2>&1) &
-    spinner $! "Updating package lists..." || return 1
+    if spinner $! "Updating package lists..."; then
+        update_ok="yes"
+    elif [ "$AUTO_MIRROR" != "no" ]; then
+        # Automatic failover when the fastest mirror is mid-sync (hash/size mismatch)
+        # or temporarily returning errors.
+        local failed_main=""
+        if [ -f "${TERMUX_PREFIX}/etc/apt/sources.list" ]; then
+            failed_main=$(awk '$1 == "deb" { print $2; exit }' "${TERMUX_PREFIX}/etc/apt/sources.list" 2>/dev/null)
+        fi
+        [ "${#RANKED_MIRRORS[@]}" -eq 0 ] && probe_fastest_mirrors || true
+        local tried=0 entry cand_file cand_time cand_main
+        for entry in "${RANKED_MIRRORS[@]}"; do
+            cand_time=${entry%%|*}
+            cand_file=${entry#*|}
+            cand_main=$(mirror_field "$cand_file" "MAIN")
+            [ -n "$cand_main" ] || continue
+            [ "$cand_main" = "$failed_main" ] && continue
+            tried=$((tried + 1))
+            [ "$tried" -gt 3 ] && break
+            echo -e "  ${YELLOW}⚠${NC}  Mirror sync/fetch issue — failing over to next fastest mirror..."
+            apply_mirror_file "$cand_file" "$cand_time" || continue
+            (DEBIAN_FRONTEND=noninteractive apt-get update -y "${APT_OPTS[@]}" \
+                < /dev/null >> "$LOG_FILE" 2>&1) &
+            if spinner $! "Updating package lists (failover #${tried})..."; then
+                update_ok="yes"
+                break
+            fi
+        done
+    fi
+    [ "$update_ok" = "yes" ] || return 1
 
     # Run pkg upgrade in FOREGROUND (not backgrounded via &) so we can catch
     # the libpcre/libandroid-selinux crash that kills binaries like 'sleep'
-    # mid-session when core libraries are replaced. If it fails, we tell the
-    # user exactly what to do rather than dying silently.
-    echo -e "  ${CYAN}⠿${NC}  Upgrading packages (may take a few minutes)..."
-    if ! DEBIAN_FRONTEND=noninteractive pkg upgrade -y "${APT_OPTS[@]}" \
-            < /dev/null >> "$LOG_FILE" 2>&1; then
+    # mid-session when core libraries are replaced. Stream key apt progress
+    # lines to the terminal so slow downloads never look frozen.
+    echo -e "  ${CYAN}⠿${NC}  Upgrading packages (live progress)..."
+    local line upgrade_rc
+    DEBIAN_FRONTEND=noninteractive pkg upgrade -y "${APT_OPTS[@]}" \
+        < /dev/null 2>&1 \
+        | tee -a "$LOG_FILE" \
+        | while IFS= read -r line; do
+            case "$line" in
+                Get:*|Fetched*|Unpacking*|Setting\ up*|Need\ to\ get*)
+                    printf "     ${GRAY}%s${NC}\n" "${line:0:72}"
+                    ;;
+            esac
+        done
+    upgrade_rc=${PIPESTATUS[0]}
+    if [ "$upgrade_rc" -ne 0 ]; then
         echo ""
         echo -e "  ${YELLOW}⚠  Upgrade hit a library conflict — this is common on first run.${NC}"
         echo ""
@@ -710,6 +886,9 @@ step_desktop() {
     # needs a session bus to reach its settings daemon. Without it XFCE greets
     # you with "Unable to contact settings server". (issue #5)
     safe_install_pkg "dbus" "D-Bus (session message bus)"
+    # GVFS enables GIO metadata (metadata::trust / metadata::xfce-exe-checksum)
+    # so desktop shortcuts don't show untrusted "!" emblems or launch prompts.
+    safe_install_pkg "gvfs" "GVFS (Desktop Metadata & Icon Trust)" optional
 
     case $DE_CHOICE in
         1)
@@ -846,6 +1025,23 @@ step_python() {
 
 # ============== ANTIGRAVITY IDE HELPERS ==============
 
+# Linux kernels older than 4.8 (common on Android 7-8, e.g. 3.18 / 4.4) have a
+# seccomp/ptrace ordering mismatch that aborts proot with:
+#   assertion "IS_IN_SYSENTER(tracee)" failed
+# Auto-enabling PROOT_NO_SECCOMP=1 on <4.8 kernels fixes it while keeping fast
+# seccomp acceleration on modern Android kernels.
+proot_needs_no_seccomp() {
+    local kver major minor
+    kver=$(uname -r 2>/dev/null || echo "")
+    major=${kver%%.*}
+    minor=${kver#*.}
+    minor=${minor%%.*}
+    minor=${minor%%-*}
+    case "$major" in ''|*[!0-9]*) return 1 ;; esac
+    case "$minor" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$major" -lt 4 ] || { [ "$major" -eq 4 ] && [ "$minor" -lt 8 ]; }
+}
+
 # Map host architecture to Google's Antigravity IDE Linux tarball platform.
 antigravity_platform_arch() {
     local machine
@@ -913,6 +1109,12 @@ step_antigravity() {
         return 0
     fi
 
+    if [ -z "${PROOT_NO_SECCOMP+x}" ] && proot_needs_no_seccomp; then
+        export PROOT_NO_SECCOMP=1
+        echo -e "  ${GRAY}  Older Android kernel ($(uname -r)) detected — enabling PROOT_NO_SECCOMP=1 for stability.${NC}"
+        log "PROOT: enabled PROOT_NO_SECCOMP=1 for kernel $(uname -r)"
+    fi
+
     if proot-distro login ubuntu -- true < /dev/null &>/dev/null; then
         printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already installed)${NC}\n" "Ubuntu glibc runtime container"
         log "SKIP (already installed): Ubuntu proot"
@@ -978,7 +1180,7 @@ step_antigravity() {
             rm -rf "$stage" "$tmp_tar"
             mkdir -p "$(dirname "$dest")" "$stage"
             trap '\''rm -rf "$tmp_tar" "$stage"'\'' EXIT
-            curl -fL --retry 3 --connect-timeout 30 -o "$tmp_tar" "$url"
+            curl -fL --progress-bar --retry 3 --connect-timeout 30 -o "$tmp_tar" "$url"
             tar -xzf "$tmp_tar" --strip-components=1 -C "$stage"
             [ -x "$stage/bin/antigravity-ide" ] || exit 1
             rm -rf "$dest"
@@ -986,7 +1188,7 @@ step_antigravity() {
             mkdir -p /usr/local/bin
             ln -sf "$dest/bin/antigravity-ide" /usr/local/bin/antigravity-ide
         ' bash "$url" "$ANTIGRAVITY_INSTALL_DIR" < /dev/null >> "$LOG_FILE" 2>&1) &
-        if ! spinner_optional $! "Downloading & installing Antigravity IDE (${plat})..."; then
+        if ! spinner_optional $! "Installing Antigravity IDE (${plat})..."; then
             record_package_failure "antigravity-ide" optional
             return 0
         fi
@@ -1285,6 +1487,21 @@ if ! dbus-daemon --session --address="$DBUS_SESSION_BUS_ADDRESS" --nopidfile --f
     exit 1
 fi
 
+# Mark ~/Desktop/*.desktop launchers as trusted via GIO/GVFS before the desktop
+# starts so LXQt (metadata::trust), MATE (metadata::trusted), and XFCE4
+# (metadata::xfce-exe-checksum) display clean icons without "!" warning badges.
+if command -v gio >/dev/null 2>&1; then
+    for _desktop_file in "$HOME"/Desktop/*.desktop; do
+        [ -f "$_desktop_file" ] || continue
+        gio set -t string "$_desktop_file" metadata::trust true 2>/dev/null || true
+        gio set -t string "$_desktop_file" metadata::trusted true 2>/dev/null || true
+        if command -v sha256sum >/dev/null 2>&1; then
+            _desktop_sha=$(sha256sum "$_desktop_file" 2>/dev/null | awk '{print $1}')
+            [ -n "$_desktop_sha" ] && gio set -t string "$_desktop_file" metadata::xfce-exe-checksum "$_desktop_sha" 2>/dev/null || true
+        fi
+    done
+fi
+
 echo "[*] Starting PulseAudio..."
 unset PULSE_SERVER
 # All calls are time-bounded on purpose. `pulseaudio --start` and `pactl` can
@@ -1351,13 +1568,18 @@ STOPEOF
             printf '#!%s/bin/bash\n' "$TERMUX_PREFIX"
             printf 'TERMUX_PREFIX=%q\nTERMUX_HOME=%q\nANTIGRAVITY_INSTALL_DIR=%q\n' \
                 "$TERMUX_PREFIX" "$TERMUX_HOME" "$ANTIGRAVITY_INSTALL_DIR"
+            declare -f proot_needs_no_seccomp
             cat << 'AGYSTARTEOF'
 if ! command -v proot-distro >/dev/null 2>&1; then
     echo "[!] proot-distro is missing. Re-run termux-linux-setup.sh --antigravity." >&2
     exit 1
 fi
 
-if ! proot-distro login ubuntu -- test -x "${ANTIGRAVITY_INSTALL_DIR}/bin/antigravity-ide" < /dev/null 2>/dev/null; then
+if [ -z "${PROOT_NO_SECCOMP+x}" ] && proot_needs_no_seccomp; then
+    export PROOT_NO_SECCOMP=1
+fi
+
+if ! proot-distro login ubuntu -- test -x "${ANTIGRAVITY_INSTALL_DIR}/antigravity-ide" < /dev/null 2>/dev/null; then
     echo "[!] Antigravity IDE is not installed in Ubuntu proot yet." >&2
     echo "    Run: bash ~/upgrade-antigravity.sh  (or re-run termux-linux-setup.sh --antigravity)" >&2
     exit 1
@@ -1369,8 +1591,31 @@ export TMPDIR="${TMPDIR:-${TERMUX_PREFIX}/tmp}"
 
 mkdir -p "${TERMUX_HOME}/.config/Antigravity" "${TERMUX_HOME}/.local/share/antigravity-extensions"
 
+PROOT_ARGS=(--shared-tmp)
+# proot-distro 5.x already binds /data/data/com.termux by default; only add an
+# explicit home bind on custom/secondary-user Termux paths to avoid warnings.
+case "$TERMUX_HOME" in
+    /data/data/com.termux/*) ;;
+    *) PROOT_ARGS+=(--bind "${TERMUX_HOME}:${TERMUX_HOME}") ;;
+esac
+
+# CLI-only flags (--version, --help, extension management, tunnel) use the
+# official Node CLI wrapper and return immediately. GUI launches MUST execute
+# the Electron binary directly in the foreground (with --no-kill-on-exit),
+# because bin/antigravity-ide detaches Electron and exits — which causes
+# proot-distro to terminate the child GUI window immediately.
+IS_CLI_ONLY="no"
+for arg in "$@"; do
+    case "$arg" in
+        -v|--version|-h|--help|--status|--list-extensions|--install-extension|--install-extension=*|--uninstall-extension|--uninstall-extension=*|--show-versions|tunnel|serve-web)
+            IS_CLI_ONLY="yes"
+            break
+            ;;
+    esac
+done
+
 # PRoot runs as uid=0 without Chromium user namespaces or full /dev/shm:
-# - --user-data-dir is required by bin/antigravity-ide when running as root
+# - --user-data-dir is required when running as root
 # - --no-sandbox / --disable-dev-shm-usage prevent Chromium startup crashes
 # - --password-store=basic avoids blocking on desktop keyring daemons
 # - --disable-gpu avoids blank Electron windows inside proot (override with ANTIGRAVITY_GPU=1)
@@ -1386,16 +1631,33 @@ if [ "${ANTIGRAVITY_GPU:-0}" != "1" ]; then
     AGY_FLAGS+=(--disable-gpu)
 fi
 
+if [ "$IS_CLI_ONLY" = "yes" ]; then
+    exec proot-distro login ubuntu \
+        "${PROOT_ARGS[@]}" \
+        -- env \
+            -u DBUS_SESSION_BUS_ADDRESS \
+            DISPLAY="$DISPLAY" \
+            PULSE_SERVER="$PULSE_SERVER" \
+            TERMUX_HOME="$TERMUX_HOME" \
+            TERMUX_PREFIX="$TERMUX_PREFIX" \
+            "${ANTIGRAVITY_INSTALL_DIR}/bin/antigravity-ide" \
+            "${AGY_FLAGS[@]}" \
+            "$@"
+fi
+
 exec proot-distro login ubuntu \
-    --shared-tmp \
-    --bind "${TERMUX_HOME}:${TERMUX_HOME}" \
+    "${PROOT_ARGS[@]}" \
+    --no-kill-on-exit \
     -- env \
+        -u DBUS_SESSION_BUS_ADDRESS \
         DISPLAY="$DISPLAY" \
+        GDK_BACKEND=x11 \
+        ELECTRON_OZONE_PLATFORM_HINT=x11 \
         PULSE_SERVER="$PULSE_SERVER" \
         BROWSER=/usr/local/bin/antigravity-open-url \
         TERMUX_HOME="$TERMUX_HOME" \
         TERMUX_PREFIX="$TERMUX_PREFIX" \
-        "${ANTIGRAVITY_INSTALL_DIR}/bin/antigravity-ide" \
+        "${ANTIGRAVITY_INSTALL_DIR}/antigravity-ide" \
         "${AGY_FLAGS[@]}" \
         "$@"
 AGYSTARTEOF
@@ -1410,6 +1672,7 @@ AGYSTARTEOF
             printf 'set -o pipefail\n'
             printf 'TERMUX_PREFIX=%q\nTERMUX_HOME=%q\nANTIGRAVITY_INSTALL_DIR=%q\nANTIGRAVITY_DOWNLOAD_PAGE=%q\nANTIGRAVITY_FALLBACK_VERSION=%q\n' \
                 "$TERMUX_PREFIX" "$TERMUX_HOME" "$ANTIGRAVITY_INSTALL_DIR" "$ANTIGRAVITY_DOWNLOAD_PAGE" "$ANTIGRAVITY_FALLBACK_VERSION"
+            declare -f proot_needs_no_seccomp
             declare -f antigravity_platform_arch
             declare -f resolve_antigravity_tarball_url
             cat << 'AGYUPGRADEEOF'
@@ -1421,6 +1684,10 @@ echo ""
 if ! command -v proot-distro >/dev/null 2>&1; then
     echo "[!] proot-distro is missing. Re-run termux-linux-setup.sh --antigravity." >&2
     exit 1
+fi
+
+if [ -z "${PROOT_NO_SECCOMP+x}" ] && proot_needs_no_seccomp; then
+    export PROOT_NO_SECCOMP=1
 fi
 
 if command -v termux-wake-lock >/dev/null 2>&1; then
