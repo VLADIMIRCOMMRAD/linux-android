@@ -22,7 +22,7 @@ The ADB/Bluetooth proposal in upstream [#11](https://github.com/mayukh4/linux-an
 
 Turn any old Android phone or tablet into a **Linux desktop** or a **smart home server** — no PC, no root, no cloud. Just [Termux](https://termux.dev).
 
-One script installs a **GPU-accelerated desktop** (XFCE4, LXQt, MATE or KDE Plasma) using native Termux packages and Termux-X11 — with Turnip/Zink hardware acceleration on Snapdragon, Firefox, VLC, Python, SSH, and optional Wine for Windows apps. A second script turns the phone into an always-on **Home Assistant** server with HACS.
+One script installs a **GPU-accelerated desktop** (XFCE4, LXQt, MATE or KDE Plasma) using native Termux packages and Termux-X11 — with Turnip/Zink hardware acceleration on Snapdragon, Firefox, VLC, **Google Antigravity IDE** (bundled via an Ubuntu `proot-distro` glibc bridge), Python, SSH, and optional Wine for Windows apps. A second script turns the phone into an always-on **Home Assistant** server with HACS.
 
 ### Quick start
 
@@ -40,7 +40,7 @@ Then `bash ~/start-linux.sh` and open Termux-X11. Home Assistant instead? Swap i
 graph LR
     A["📱 Old Android Phone<br/>+ Termux"] --> B["🖥️ Linux Desktop<br/><i>termux-linux-setup.sh</i>"]
     A --> C["🏠 Smart Home Server<br/><i>setup-homeassistant.sh</i>"]
-    B --> D["GPU-accelerated DE<br/>Firefox, VLC, SSH, Wine"]
+    B --> D["GPU-accelerated DE<br/>Firefox, VLC, Antigravity IDE, SSH, Wine"]
     C --> E["Home Assistant Core<br/>Control lights & plugs"]
 ```
 
@@ -147,6 +147,7 @@ curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/
 | Flag | Meaning |
 |---|---|
 | `--de xfce\|lxqt\|mate\|kde` | Desktop to install (default `xfce`) |
+| `--antigravity` / `--no-antigravity` | Google Antigravity IDE via Ubuntu proot (default: yes) |
 | `--wine` / `--no-wine` | Windows app support (default: no) |
 | `-y`, `--yes` | Don't ask anything |
 | `-h`, `--help` | Show all options |
@@ -182,6 +183,7 @@ bash ~/stop-linux.sh
 | **PulseAudio** | Audio server |
 | **Firefox** | Full desktop web browser |
 | **VLC** | Video and audio player |
+| **Google Antigravity IDE** *(default)* | AI-first IDE installed in a shared Ubuntu `proot-distro` glibc runtime with a native desktop shortcut and `antigravity-ide` command |
 | **Git, wget, curl** | Standard developer tools |
 | **Python 3 + pip** | Python runtime and package manager |
 | **OpenSSH** | SSH server and client — remote access from your PC |
@@ -290,6 +292,38 @@ By default `sshd` stops when Termux is closed. To keep it running persistently:
 # Add to your ~/.bashrc so sshd auto-starts whenever Termux opens
 echo 'sshd 2>/dev/null' >> ~/.bashrc
 ```
+
+---
+
+## Google Antigravity IDE
+
+By default, `termux-linux-setup.sh` bundles **Google Antigravity IDE** alongside Terminal, Firefox, and VLC — pass `--no-antigravity` to skip it.
+
+Because Google Antigravity IDE is a Linux Electron/VS Code build requiring **glibc >= 2.28** (while native Termux uses Android's Bionic libc), the installer sets up a lightweight hybrid bridge:
+
+- Installs `proot-distro` and reuses the shared `ubuntu` container (fully compatible with `setup-homeassistant.sh`).
+- Installs the required GTK3/X11/NSS/font runtime libraries inside Ubuntu (handling Ubuntu 24.04+ `*t64` package names automatically).
+- Downloads the official Linux ARM64 (or x64) `Antigravity IDE.tar.gz` into `/opt/antigravity-ide` inside Ubuntu.
+- Generates `~/start-antigravity.sh` (symlinked as `antigravity-ide`), `~/upgrade-antigravity.sh`, and desktop/menu launchers (`~/Desktop/Antigravity_IDE.desktop`) that share Termux-X11 (`--shared-tmp`), PulseAudio (`127.0.0.1`), and persistent settings (`~/.config/Antigravity`).
+
+### Launching and upgrading
+
+Click the **Antigravity IDE** icon on your desktop, or run from a terminal inside the desktop:
+
+```bash
+antigravity-ide
+# or open a project folder:
+antigravity-ide ~/my-project
+
+# Upgrade Antigravity IDE later:
+bash ~/upgrade-antigravity.sh
+```
+
+### Android notes for Antigravity IDE
+
+- **OAuth sign-in:** Links are opened via `termux-open-url` / Firefox and logged to `~/antigravity-oauth-url.log` so you can always copy-paste the sign-in URL manually if needed.
+- **GPU acceleration inside PRoot:** The launcher passes `--disable-gpu` by default to prevent blank Electron windows inside `proot-distro`. To test hardware rendering, run `ANTIGRAVITY_GPU=1 antigravity-ide`.
+- **39-bit ARM64 Android kernels:** Some older/stock Android kernels restrict user-space virtual memory to 39-bit (`CONFIG_ARM64_VA_BITS=39`). While the IDE window runs in PRoot, Google's bundled TCMalloc-based language server binary can report `MmapAligned() failed` on 39-bit kernels (devices with 48-bit VA kernels are unaffected).
 
 ---
 
