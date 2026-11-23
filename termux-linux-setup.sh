@@ -8,6 +8,7 @@
 #  - Conflict-safe package installer (no more silent exits)
 #  - SSH server pre-installed and configured
 #  - Productivity & Media tools (VLC, Firefox)
+#  - Google Antigravity IDE (via Ubuntu proot-distro bridge + desktop icon)
 #  - Python 3 + pip
 #  - Optional: Windows App Support (Wine/Hangover + Box64)
 #  - One-line install (curl | bash) and unattended flags: see --help
@@ -27,6 +28,8 @@ TERMUX_PREFIX="${PREFIX:-/data/data/com.termux/files/usr}"
 TERMUX_HOME="${HOME:-/data/data/com.termux/files/home}"
 
 # ============== CONFIGURATION ==============
+INSTALL_ANTIGRAVITY="yes"
+ANTIGRAVITY_READY="no"
 INSTALL_WINE="no"
 DE_CHOICE="1"
 GPU_STACK="stock"
@@ -36,8 +39,14 @@ REQUIRED_FAILURES=()
 OPTIONAL_FAILURES=()
 # TOTAL_STEPS is set after user choices are made
 
+# Official Google Antigravity IDE Linux distribution endpoints.
+ANTIGRAVITY_DOWNLOAD_PAGE="https://antigravity.google/download"
+ANTIGRAVITY_FALLBACK_VERSION="2.8.0-6733682917113856"
+ANTIGRAVITY_INSTALL_DIR="/opt/antigravity-ide"
+
 # Set from command-line flags (see usage below).
 DE_FROM_FLAG=""
+ANTIGRAVITY_FROM_FLAG=""
 WINE_FROM_FLAG=""
 ASSUME_YES="no"
 
@@ -57,6 +66,8 @@ APT_OPTS=(
     -o Acquire::https::Timeout=30
     -o DPkg::Lock::Timeout=300
 )
+# Same options as a string for apt inside the Ubuntu proot container.
+APT_OPTS_STR="${APT_OPTS[*]}"
 
 # ============== COMMAND-LINE FLAGS ==============
 usage() {
@@ -67,11 +78,13 @@ Turn an Android phone into a Linux desktop with Termux + Termux-X11.
 Run with no options for the interactive installer.
 
 Options:
-  --de <name>   Desktop to install: xfce (default), lxqt, mate, kde
-  --wine        Also install Windows app support (Hangover Wine + Box64)
-  --no-wine     Skip Wine (default)
-  -y, --yes     Don't ask anything; use the flags above or the defaults
-  -h, --help    Show this help
+  --de <name>       Desktop to install: xfce (default), lxqt, mate, kde
+  --antigravity     Install Google Antigravity IDE via Ubuntu proot (default)
+  --no-antigravity  Skip Google Antigravity IDE
+  --wine            Also install Windows app support (Hangover Wine + Box64)
+  --no-wine         Skip Wine (default)
+  -y, --yes         Don't ask anything; use the flags above or the defaults
+  -h, --help        Show this help
 
 One-line install:
   curl -fsSL https://raw.githubusercontent.com/VLADIMIRCOMMRAD/linux-android/main/termux-linux-setup.sh | bash
@@ -116,10 +129,12 @@ parse_args() {
                     exit 2
                 fi
                 ;;
-            --wine)    WINE_FROM_FLAG="yes" ;;
-            --no-wine) WINE_FROM_FLAG="no" ;;
-            -y|--yes)  ASSUME_YES="yes" ;;
-            -h|--help) usage; exit 0 ;;
+            --antigravity)    ANTIGRAVITY_FROM_FLAG="yes" ;;
+            --no-antigravity) ANTIGRAVITY_FROM_FLAG="no" ;;
+            --wine)           WINE_FROM_FLAG="yes" ;;
+            --no-wine)        WINE_FROM_FLAG="no" ;;
+            -y|--yes)         ASSUME_YES="yes" ;;
+            -h|--help)        usage; exit 0 ;;
             *)
                 echo "Unknown option: $arg" >&2
                 usage >&2
@@ -571,6 +586,31 @@ setup_environment() {
     esac
     echo -e "\n  ${GREEN}✔ Selected: ${BOLD}${DE_NAME}${NC}"
 
+    # ---- Optional: Antigravity IDE ----
+    echo ""
+    echo -e "${CYAN}Optional: Install Google Antigravity IDE?${NC}"
+    echo -e "  ${GRAY}Adds ~1.2 GB (Ubuntu proot glibc runtime + Antigravity IDE).${NC}"
+    echo -e "  ${GRAY}Launches from your desktop alongside Firefox, VLC, and Terminal.${NC}"
+    echo ""
+    if [ -n "$ANTIGRAVITY_FROM_FLAG" ]; then
+        INSTALL_ANTIGRAVITY="$ANTIGRAVITY_FROM_FLAG"
+    else
+        while true; do
+            ask AGY_INPUT "  Install Antigravity IDE? (y/n) [default: y]: "
+            AGY_INPUT=${AGY_INPUT:-y}
+            case "$AGY_INPUT" in
+                [Yy]*) INSTALL_ANTIGRAVITY="yes"; break;;
+                [Nn]*) INSTALL_ANTIGRAVITY="no";  break;;
+                *) echo -e "  ${RED}Please enter y or n.${NC}";;
+            esac
+        done
+    fi
+    if [ "$INSTALL_ANTIGRAVITY" == "yes" ]; then
+        echo -e "  ${GREEN}✔ Antigravity IDE will be installed.${NC}"
+    else
+        echo -e "  ${GRAY}  Antigravity IDE skipped.${NC}"
+    fi
+
     # ---- Optional: Wine ----
     echo ""
     echo -e "${CYAN}Optional: Install Windows app support (Wine + Box64/Hangover)?${NC}"
@@ -596,9 +636,10 @@ setup_environment() {
     fi
 
     TOTAL_STEPS=10
-    [ "$INSTALL_WINE" == "yes" ] && TOTAL_STEPS=11
+    [ "$INSTALL_ANTIGRAVITY" == "yes" ] && TOTAL_STEPS=$((TOTAL_STEPS + 1))
+    [ "$INSTALL_WINE" == "yes" ] && TOTAL_STEPS=$((TOTAL_STEPS + 1))
 
-    log "DE=$DE_NAME, GPU=$GPU_DRIVER, Wine=$INSTALL_WINE"
+    log "DE=$DE_NAME, GPU=$GPU_DRIVER, Antigravity=$INSTALL_ANTIGRAVITY, Wine=$INSTALL_WINE"
     sleep 1
 }
 
@@ -803,7 +844,188 @@ step_python() {
     safe_install_pkg "python-pip" "pip (Python Package Manager)" optional
 }
 
-# ============== STEP 9 (OPTIONAL): WINE ==============
+# ============== ANTIGRAVITY IDE HELPERS ==============
+
+# Map host architecture to Google's Antigravity IDE Linux tarball platform.
+antigravity_platform_arch() {
+    local machine
+    machine="${1:-$(uname -m)}"
+    case "$machine" in
+        aarch64|arm64) echo "linux-arm" ;;
+        x86_64|amd64)  echo "linux-x64" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Resolve the latest official Antigravity IDE tarball URL from the download
+# page, falling back to the last verified stable release if offline or changed.
+resolve_antigravity_tarball_url() {
+    if [ -n "${ANTIGRAVITY_TARBALL_URL:-}" ]; then
+        printf '%s\n' "$ANTIGRAVITY_TARBALL_URL"
+        return 0
+    fi
+
+    local plat url=""
+    plat=$(antigravity_platform_arch "${1:-}") || return 1
+
+    if command -v curl >/dev/null 2>&1; then
+        url=$(curl -fsSL --max-time 20 "$ANTIGRAVITY_DOWNLOAD_PAGE" 2>/dev/null \
+            | grep -Eo "https://edgedl\.me\.gvt1\.com/edgedl/release2/j0qc3/antigravity/stable/[^\"'<>[:space:]]+/${plat}/Antigravity(%20| )IDE\.tar\.gz" \
+            | head -n 1 \
+            | sed 's/ /%20/g' || true)
+    fi
+
+    if [ -z "$url" ]; then
+        url="https://edgedl.me.gvt1.com/edgedl/release2/j0qc3/antigravity/stable/${ANTIGRAVITY_FALLBACK_VERSION}/${plat}/Antigravity%20IDE.tar.gz"
+    fi
+
+    printf '%s\n' "$url"
+}
+
+# ============== STEP 9 (OPTIONAL): ANTIGRAVITY IDE ==============
+#
+# Google Antigravity IDE is a glibc Electron/VS Code-based Linux desktop build
+# (requires glibc >= 2.28 and GTK3/X11/NSS runtime libraries). Native Termux
+# uses Android's Bionic libc, so we install Antigravity IDE inside a shared
+# proot-distro Ubuntu container and display it seamlessly on native Termux-X11
+# via --shared-tmp + ~/start-antigravity.sh. Reuses the same Ubuntu container
+# as setup-homeassistant.sh without conflict.
+step_antigravity() {
+    update_progress
+    echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing Google Antigravity IDE...${NC}"
+    echo ""
+
+    local plat url
+    if ! plat=$(antigravity_platform_arch); then
+        echo -e "  ${YELLOW}⚠  Antigravity IDE requires 64-bit Linux (arm64/x86_64); skipping on $(uname -m).${NC}"
+        log "OPTIONAL SKIP: antigravity-ide unsupported arch $(uname -m)"
+        record_package_failure "antigravity-ide" optional
+        return 0
+    fi
+
+    safe_install_pkg "proot-distro" "proot-distro (glibc runtime manager)" optional || return 0
+    safe_install_pkg "proot"        "proot (user-space chroot)" optional || return 0
+
+    if ! command -v proot-distro >/dev/null 2>&1; then
+        echo -e "  ${YELLOW}⚠  proot-distro unavailable — skipping Antigravity IDE.${NC}"
+        log "OPTIONAL FAILED: proot-distro command missing for antigravity-ide"
+        record_package_failure "antigravity-ide" optional
+        return 0
+    fi
+
+    if proot-distro login ubuntu -- true < /dev/null &>/dev/null; then
+        printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already installed)${NC}\n" "Ubuntu glibc runtime container"
+        log "SKIP (already installed): Ubuntu proot"
+    else
+        (proot-distro install ubuntu < /dev/null >> "$LOG_FILE" 2>&1) &
+        if ! spinner_optional $! "Setting up Ubuntu glibc container..."; then
+            record_package_failure "antigravity-ide" optional
+            return 0
+        fi
+    fi
+
+    (proot-distro login ubuntu -- bash -c \
+        "DEBIAN_FRONTEND=noninteractive apt-get update -y ${APT_OPTS_STR}" \
+        < /dev/null >> "$LOG_FILE" 2>&1) &
+    if ! spinner_optional $! "Updating Ubuntu package lists..."; then
+        record_package_failure "antigravity-ide" optional
+        return 0
+    fi
+
+    # Install Electron/GTK3/X11/NSS/font runtime libraries in one apt call.
+    # Handles Ubuntu 24.04+ 64-bit time_t (*t64) package renames automatically.
+    (proot-distro login ubuntu -- bash -c '
+        set -o pipefail
+        apt_opts="$1"
+        pkgs=(
+            ca-certificates curl tar
+            libnss3 libnspr4 libgbm1 libdrm2 libxshmfence1
+            libx11-6 libx11-xcb1 libxcb1 libxcb-dri3-0
+            libxcomposite1 libxdamage1 libxext6 libxfixes3
+            libxkbcommon0 libxkbfile1 libxrandr2
+            libcairo2 libpango-1.0-0 libglib2.0-0 libexpat1
+            libdbus-1-3 libudev1 libsecret-1-0 libvulkan1
+            dbus-x11 xdg-utils fonts-dejavu-core
+        )
+        for base in libasound2 libatk1.0-0 libatk-bridge2.0-0 libatspi2.0-0 libcups2 libgtk-3-0; do
+            if apt-cache show "${base}t64" >/dev/null 2>&1; then
+                pkgs+=("${base}t64")
+            else
+                pkgs+=("$base")
+            fi
+        done
+        # shellcheck disable=SC2086
+        DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends $apt_opts "${pkgs[@]}"
+    ' bash "$APT_OPTS_STR" < /dev/null >> "$LOG_FILE" 2>&1) &
+    if ! spinner_optional $! "Installing Antigravity IDE runtime libraries (Ubuntu)..."; then
+        record_package_failure "antigravity-ide" optional
+        return 0
+    fi
+
+    if proot-distro login ubuntu -- test -x "${ANTIGRAVITY_INSTALL_DIR}/bin/antigravity-ide" < /dev/null &>/dev/null; then
+        printf "  ${GRAY}~${NC}  %-55s ${GRAY}(already installed)${NC}\n" "Google Antigravity IDE (${plat})"
+        log "SKIP (already installed in Ubuntu): ${ANTIGRAVITY_INSTALL_DIR}"
+    else
+        url=$(resolve_antigravity_tarball_url)
+        log "INSTALL: Antigravity IDE (${plat}) from ${url}"
+        echo -e "  ${GRAY}Antigravity IDE is ~190 MB — download and extraction may take a few minutes.${NC}"
+        (proot-distro login ubuntu -- bash -c '
+            set -o pipefail
+            url="$1"
+            dest="$2"
+            tmp_tar="/tmp/antigravity-ide.$$.tar.gz"
+            stage="${dest}.new.$$"
+            rm -rf "$stage" "$tmp_tar"
+            mkdir -p "$(dirname "$dest")" "$stage"
+            trap '\''rm -rf "$tmp_tar" "$stage"'\'' EXIT
+            curl -fL --retry 3 --connect-timeout 30 -o "$tmp_tar" "$url"
+            tar -xzf "$tmp_tar" --strip-components=1 -C "$stage"
+            [ -x "$stage/bin/antigravity-ide" ] || exit 1
+            rm -rf "$dest"
+            mv "$stage" "$dest"
+            mkdir -p /usr/local/bin
+            ln -sf "$dest/bin/antigravity-ide" /usr/local/bin/antigravity-ide
+        ' bash "$url" "$ANTIGRAVITY_INSTALL_DIR" < /dev/null >> "$LOG_FILE" 2>&1) &
+        if ! spinner_optional $! "Downloading & installing Antigravity IDE (${plat})..."; then
+            record_package_failure "antigravity-ide" optional
+            return 0
+        fi
+    fi
+
+    # Install an OAuth/URL bridge inside Ubuntu so sign-in links can open in
+    # Android/Termux Firefox and are always logged for manual copy-paste.
+    proot-distro login ubuntu -- bash -c \
+        'mkdir -p /usr/local/bin && cat > /usr/local/bin/antigravity-open-url && chmod +x /usr/local/bin/antigravity-open-url' \
+        << 'OPENURLEOF' >> "$LOG_FILE" 2>&1 || true
+#!/bin/sh
+url="$1"
+[ -n "$url" ] || exit 0
+if [ -n "${TERMUX_HOME:-}" ]; then
+    printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$url" >> "${TERMUX_HOME}/antigravity-oauth-url.log" 2>/dev/null || true
+fi
+if [ -n "${TERMUX_PREFIX:-}" ] && [ -x "${TERMUX_PREFIX}/bin/termux-open-url" ]; then
+    env -u LD_LIBRARY_PATH -u LD_PRELOAD "${TERMUX_PREFIX}/bin/termux-open-url" "$url" >/dev/null 2>&1 && exit 0
+fi
+if [ -n "${TERMUX_PREFIX:-}" ] && [ -x "${TERMUX_PREFIX}/bin/firefox" ]; then
+    env -u LD_LIBRARY_PATH -u LD_PRELOAD "${TERMUX_PREFIX}/bin/firefox" "$url" >/dev/null 2>&1 &
+    exit 0
+fi
+printf 'Open this URL in your browser: %s\n' "$url" >&2
+OPENURLEOF
+
+    # Copy the official IDE icon out to Termux for the native desktop shortcut.
+    mkdir -p "$TERMUX_HOME/.local/share/icons"
+    if proot-distro login ubuntu -- test -r "${ANTIGRAVITY_INSTALL_DIR}/resources/app/resources/linux/code.png" < /dev/null 2>/dev/null; then
+        proot-distro login ubuntu -- cat "${ANTIGRAVITY_INSTALL_DIR}/resources/app/resources/linux/code.png" \
+            < /dev/null > "$TERMUX_HOME/.local/share/icons/antigravity-ide.png" 2>/dev/null || true
+    fi
+
+    ANTIGRAVITY_READY="yes"
+    echo -e "  ${GREEN}✔${NC}  Antigravity IDE ready (${ANTIGRAVITY_INSTALL_DIR} in Ubuntu proot)."
+    log "OK: Antigravity IDE ready"
+}
+
+# ============== STEP 10 (OPTIONAL): WINE ==============
 step_wine() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Installing Windows support (Wine + Box64)...${NC}"
@@ -913,7 +1135,7 @@ POWEREND
     log "LXQt: disabled optional Power Management autostart for Android"
 }
 
-# ============== STEP 10: LAUNCHER SCRIPTS ==============
+# ============== STEP 11: LAUNCHER SCRIPTS ==============
 step_launchers() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Creating startup scripts...${NC}"
@@ -1110,6 +1332,7 @@ LAUNCHEREOF
         printf 'stop_desktop_session() {\n    %s\n}\n' "$KILL_CMD"
         cat << 'STOPEOF'
 echo "[*] Stopping ${DE_NAME}..."
+pkill -f "antigravity-ide" 2>/dev/null || true
 pkill -9 -f "termux.x11" 2>/dev/null || true
 pkill -9 -f "pulseaudio"  2>/dev/null || true
 stop_desktop_session || true
@@ -1122,9 +1345,134 @@ STOPEOF
     } > ~/stop-linux.sh
     chmod +x ~/stop-linux.sh
     echo -e "  ${GREEN}✔ Created ~/stop-linux.sh${NC}"
+
+    if [ "$INSTALL_ANTIGRAVITY" == "yes" ]; then
+        {
+            printf '#!%s/bin/bash\n' "$TERMUX_PREFIX"
+            printf 'TERMUX_PREFIX=%q\nTERMUX_HOME=%q\nANTIGRAVITY_INSTALL_DIR=%q\n' \
+                "$TERMUX_PREFIX" "$TERMUX_HOME" "$ANTIGRAVITY_INSTALL_DIR"
+            cat << 'AGYSTARTEOF'
+if ! command -v proot-distro >/dev/null 2>&1; then
+    echo "[!] proot-distro is missing. Re-run termux-linux-setup.sh --antigravity." >&2
+    exit 1
+fi
+
+if ! proot-distro login ubuntu -- test -x "${ANTIGRAVITY_INSTALL_DIR}/bin/antigravity-ide" < /dev/null 2>/dev/null; then
+    echo "[!] Antigravity IDE is not installed in Ubuntu proot yet." >&2
+    echo "    Run: bash ~/upgrade-antigravity.sh  (or re-run termux-linux-setup.sh --antigravity)" >&2
+    exit 1
+fi
+
+export DISPLAY="${DISPLAY:-:0}"
+export PULSE_SERVER="${PULSE_SERVER:-127.0.0.1}"
+export TMPDIR="${TMPDIR:-${TERMUX_PREFIX}/tmp}"
+
+mkdir -p "${TERMUX_HOME}/.config/Antigravity" "${TERMUX_HOME}/.local/share/antigravity-extensions"
+
+# PRoot runs as uid=0 without Chromium user namespaces or full /dev/shm:
+# - --user-data-dir is required by bin/antigravity-ide when running as root
+# - --no-sandbox / --disable-dev-shm-usage prevent Chromium startup crashes
+# - --password-store=basic avoids blocking on desktop keyring daemons
+# - --disable-gpu avoids blank Electron windows inside proot (override with ANTIGRAVITY_GPU=1)
+AGY_FLAGS=(
+    --no-sandbox
+    --disable-gpu-sandbox
+    --disable-dev-shm-usage
+    --password-store=basic
+    "--user-data-dir=${TERMUX_HOME}/.config/Antigravity"
+    "--extensions-dir=${TERMUX_HOME}/.local/share/antigravity-extensions"
+)
+if [ "${ANTIGRAVITY_GPU:-0}" != "1" ]; then
+    AGY_FLAGS+=(--disable-gpu)
+fi
+
+exec proot-distro login ubuntu \
+    --shared-tmp \
+    --bind "${TERMUX_HOME}:${TERMUX_HOME}" \
+    -- env \
+        DISPLAY="$DISPLAY" \
+        PULSE_SERVER="$PULSE_SERVER" \
+        BROWSER=/usr/local/bin/antigravity-open-url \
+        TERMUX_HOME="$TERMUX_HOME" \
+        TERMUX_PREFIX="$TERMUX_PREFIX" \
+        "${ANTIGRAVITY_INSTALL_DIR}/bin/antigravity-ide" \
+        "${AGY_FLAGS[@]}" \
+        "$@"
+AGYSTARTEOF
+        } > "$TERMUX_HOME/start-antigravity.sh"
+        chmod +x "$TERMUX_HOME/start-antigravity.sh"
+        mkdir -p "$TERMUX_PREFIX/bin"
+        ln -sf "$TERMUX_HOME/start-antigravity.sh" "$TERMUX_PREFIX/bin/antigravity-ide"
+        echo -e "  ${GREEN}✔ Created ~/start-antigravity.sh (command: antigravity-ide)${NC}"
+
+        {
+            printf '#!%s/bin/bash\n' "$TERMUX_PREFIX"
+            printf 'set -o pipefail\n'
+            printf 'TERMUX_PREFIX=%q\nTERMUX_HOME=%q\nANTIGRAVITY_INSTALL_DIR=%q\nANTIGRAVITY_DOWNLOAD_PAGE=%q\nANTIGRAVITY_FALLBACK_VERSION=%q\n' \
+                "$TERMUX_PREFIX" "$TERMUX_HOME" "$ANTIGRAVITY_INSTALL_DIR" "$ANTIGRAVITY_DOWNLOAD_PAGE" "$ANTIGRAVITY_FALLBACK_VERSION"
+            declare -f antigravity_platform_arch
+            declare -f resolve_antigravity_tarball_url
+            cat << 'AGYUPGRADEEOF'
+
+echo ""
+echo "[*] Upgrading Google Antigravity IDE..."
+echo ""
+
+if ! command -v proot-distro >/dev/null 2>&1; then
+    echo "[!] proot-distro is missing. Re-run termux-linux-setup.sh --antigravity." >&2
+    exit 1
+fi
+
+if command -v termux-wake-lock >/dev/null 2>&1; then
+    termux-wake-lock
+    trap 'termux-wake-unlock 2>/dev/null || true' EXIT
+fi
+
+pkill -f "antigravity-ide" 2>/dev/null || true
+sleep 1
+
+URL=$(resolve_antigravity_tarball_url) || {
+    echo "[!] Unsupported architecture: $(uname -m)" >&2
+    exit 1
+}
+echo "[*] Package URL: $URL"
+
+if ! proot-distro login ubuntu -- bash -c '
+    set -o pipefail
+    url="$1"
+    dest="$2"
+    tmp_tar="/tmp/antigravity-ide.$$.tar.gz"
+    stage="${dest}.new.$$"
+    rm -rf "$stage" "$tmp_tar"
+    mkdir -p "$(dirname "$dest")" "$stage"
+    trap '\''rm -rf "$tmp_tar" "$stage"'\'' EXIT
+    curl -fL --retry 3 --connect-timeout 30 -o "$tmp_tar" "$url"
+    tar -xzf "$tmp_tar" --strip-components=1 -C "$stage"
+    [ -x "$stage/bin/antigravity-ide" ] || exit 1
+    rm -rf "$dest"
+    mv "$stage" "$dest"
+    mkdir -p /usr/local/bin
+    ln -sf "$dest/bin/antigravity-ide" /usr/local/bin/antigravity-ide
+' bash "$URL" "$ANTIGRAVITY_INSTALL_DIR" < /dev/null; then
+    echo "[!] Antigravity IDE upgrade failed." >&2
+    exit 1
+fi
+
+mkdir -p "$TERMUX_HOME/.local/share/icons"
+if proot-distro login ubuntu -- test -r "${ANTIGRAVITY_INSTALL_DIR}/resources/app/resources/linux/code.png" < /dev/null 2>/dev/null; then
+    proot-distro login ubuntu -- cat "${ANTIGRAVITY_INSTALL_DIR}/resources/app/resources/linux/code.png" \
+        < /dev/null > "$TERMUX_HOME/.local/share/icons/antigravity-ide.png" 2>/dev/null || true
+fi
+
+echo "[✔] Antigravity IDE updated. Launch with: antigravity-ide (or desktop icon)"
+AGYUPGRADEEOF
+        } > "$TERMUX_HOME/upgrade-antigravity.sh"
+        chmod +x "$TERMUX_HOME/upgrade-antigravity.sh"
+        echo -e "  ${GREEN}✔ Created ~/upgrade-antigravity.sh${NC}"
+    fi
 }
 
-# ============== STEP 11: DESKTOP SHORTCUTS ==============
+# ============== STEP 12: DESKTOP SHORTCUTS ==============
 step_shortcuts() {
     update_progress
     echo -e "${PURPLE}[Step ${CURRENT_STEP}/${TOTAL_STEPS}] Creating desktop shortcuts...${NC}"
@@ -1167,6 +1515,26 @@ Type=Application
 Categories=System;TerminalEmulator;
 EOF
 
+    if [ "$INSTALL_ANTIGRAVITY" == "yes" ]; then
+        local agy_icon="applications-development"
+        if [ -f "$TERMUX_HOME/.local/share/icons/antigravity-ide.png" ]; then
+            agy_icon="$TERMUX_HOME/.local/share/icons/antigravity-ide.png"
+        fi
+        mkdir -p "$TERMUX_HOME/.local/share/applications"
+        cat > ~/Desktop/Antigravity_IDE.desktop << EOF
+[Desktop Entry]
+Name=Antigravity IDE
+Comment=Google Antigravity AI-first IDE
+Exec="${TERMUX_HOME}/start-antigravity.sh" %F
+Icon=${agy_icon}
+Type=Application
+Categories=Development;IDE;
+StartupNotify=true
+StartupWMClass=Antigravity IDE
+EOF
+        cp ~/Desktop/Antigravity_IDE.desktop "$TERMUX_HOME/.local/share/applications/antigravity-ide.desktop"
+    fi
+
     if [ "$INSTALL_WINE" == "yes" ]; then
         cat > ~/Desktop/Wine_Config.desktop << 'EOF'
 [Desktop Entry]
@@ -1194,9 +1562,19 @@ show_completion() {
   ╚══════════════════════════════════════════════════════╝
 COMPLETE
     echo -e "${NC}"
-    echo -e "  ${WHITE}Desktop  : ${GREEN}${DE_NAME}${NC}"
-    echo -e "  ${WHITE}GPU      : ${GREEN}${GPU_DRIVER}${NC}"
-    echo -e "  ${WHITE}Wine     : ${GREEN}${INSTALL_WINE}${NC}"
+    local agy_status="no"
+    if [ "$INSTALL_ANTIGRAVITY" == "yes" ]; then
+        if [ "$ANTIGRAVITY_READY" == "yes" ]; then
+            agy_status="yes"
+        else
+            agy_status="incomplete (optional — see log)"
+        fi
+    fi
+
+    echo -e "  ${WHITE}Desktop     : ${GREEN}${DE_NAME}${NC}"
+    echo -e "  ${WHITE}GPU         : ${GREEN}${GPU_DRIVER}${NC}"
+    echo -e "  ${WHITE}Antigravity : ${GREEN}${agy_status}${NC}"
+    echo -e "  ${WHITE}Wine        : ${GREEN}${INSTALL_WINE}${NC}"
     if [ "${#OPTIONAL_FAILURES[@]}" -gt 0 ]; then
         echo -e "  ${YELLOW}Optional packages unavailable: ${OPTIONAL_FAILURES[*]}${NC}"
         echo "  Those features are not installed; see the log and re-run to retry."
@@ -1205,6 +1583,9 @@ COMPLETE
     echo -e "${YELLOW}  ─────────────────────────────────────────────────${NC}"
     echo -e "  ${WHITE}▶  START DESKTOP:${NC}  ${GREEN}bash ~/start-linux.sh${NC}"
     echo -e "  ${WHITE}■  STOP DESKTOP: ${NC}  ${GREEN}bash ~/stop-linux.sh${NC}"
+    if [ "$INSTALL_ANTIGRAVITY" == "yes" ]; then
+        echo -e "  ${WHITE}★  ANTIGRAVITY:  ${NC}  ${GREEN}antigravity-ide${NC} ${GRAY}(or Desktop icon; upgrade: bash ~/upgrade-antigravity.sh)${NC}"
+    fi
     echo -e "${YELLOW}  ─────────────────────────────────────────────────${NC}"
     echo ""
     echo -e "  ${CYAN}SSH into this device from another machine:${NC}"
@@ -1261,6 +1642,7 @@ main() {
     step_apps
     step_python
 
+    [ "$INSTALL_ANTIGRAVITY" == "yes" ] && step_antigravity
     [ "$INSTALL_WINE" == "yes" ] && step_wine
 
     step_launchers || return 1
